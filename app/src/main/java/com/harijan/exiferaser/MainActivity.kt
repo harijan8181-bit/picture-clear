@@ -4,6 +4,7 @@ import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.*
@@ -173,31 +174,83 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // 권한 요청이 끝나면(허용·거부와 무관하게) 이어서 실행할 작업
+    private var afterPermissionAction: (() -> Unit)? = null
+
     private val requestPermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ -> }
+    ) { _ ->
+        afterPermissionAction?.invoke()
+        afterPermissionAction = null
+    }
 
-    private fun checkAndRequestPermissions() {
-        val permissions = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions.add(android.Manifest.permission.READ_MEDIA_IMAGES)
-        } else {
-            permissions.add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+    private fun isGranted(permission: String) =
+        checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * 원본 파일의 GPS 위치까지 분석하는 데 필요한 사진 권한
+     * - Android 14+: "선택한 사진만 허용"(READ_MEDIA_VISUAL_USER_SELECTED)도 정상 허용으로 처리
+     * - 사진 선택기·공유 기능은 권한 없이 동작하므로, 거부해도 앱은 계속 사용 가능
+     */
+    private fun mediaPermissions(): List<String> = when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> listOf(
+            android.Manifest.permission.READ_MEDIA_IMAGES,
+            android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+            android.Manifest.permission.ACCESS_MEDIA_LOCATION
+        )
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> listOf(
+            android.Manifest.permission.READ_MEDIA_IMAGES,
+            android.Manifest.permission.ACCESS_MEDIA_LOCATION
+        )
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> listOf(
+            android.Manifest.permission.READ_EXTERNAL_STORAGE,
+            android.Manifest.permission.ACCESS_MEDIA_LOCATION
+        )
+        else -> listOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+
+    private fun hasMediaAccess(): Boolean {
+        val read = when {
+            // 전체 허용이든 "선택한 사진만 허용"이든 읽기 가능
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE ->
+                isGranted(android.Manifest.permission.READ_MEDIA_IMAGES) ||
+                        isGranted(android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
+                isGranted(android.Manifest.permission.READ_MEDIA_IMAGES)
+            else -> isGranted(android.Manifest.permission.READ_EXTERNAL_STORAGE)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            permissions.add(android.Manifest.permission.ACCESS_MEDIA_LOCATION)
-        } else {
-            // Android 9 이하는 Pictures 폴더에 직접 파일을 쓰므로 쓰기 권한 필요
-            permissions.add(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        val location = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                isGranted(android.Manifest.permission.ACCESS_MEDIA_LOCATION)
+        return read && location
+    }
+
+    /** 필요한 권한이 없을 때만 요청하고, 요청이 끝나면 action 실행 */
+    private fun withMediaPermission(action: () -> Unit) {
+        if (hasMediaAccess()) {
+            action()
+            return
         }
-        requestPermissionsLauncher.launch(permissions.toTypedArray())
+        afterPermissionAction = action
+        requestPermissionsLauncher.launch(mediaPermissions().toTypedArray())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         MobileAds.initialize(this) {}
-        checkAndRequestPermissions()
+
+        // Android 9 이하는 Pictures 폴더에 직접 파일을 쓰므로 쓰기 권한이 미리 필요
+        // (그 외 사진 권한은 앱 시작 시 묻지 않고, 원본 파일 분석을 고를 때만 요청)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            !isGranted(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        ) {
+            requestPermissionsLauncher.launch(
+                arrayOf(
+                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE
+                )
+            )
+        }
 
         initThemeColors()
 
@@ -843,7 +896,8 @@ class MainActivity : ComponentActivity() {
                 if (which == 0) {
                     pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 } else {
-                    pickDocument.launch(arrayOf("image/*"))
+                    // 위치정보가 가려지지 않은 원본을 분석하려면 사진 권한 필요 (거부해도 파일 선택은 진행)
+                    withMediaPermission { pickDocument.launch(arrayOf("image/*")) }
                 }
             }
             .setNegativeButton("취소", null)
