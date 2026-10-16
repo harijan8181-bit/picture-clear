@@ -26,5 +26,9 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.2")
     implementation("com.google.android.gms:play-services-ads:23.3.0")
     implementation(libs.mlkit.face.detection)
+    implementation(libs.mlkit.text.recognition.korean)
+    implementation(libs.mlkit.barcode.scanning)
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+
+    testImplementation(libs.junit)
 }

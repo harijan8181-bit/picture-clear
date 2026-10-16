@@ -1,7 +1,6 @@
 package com.example.myapplication009
 
 import android.app.AlertDialog
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
@@ -13,19 +12,19 @@ import androidx.exifinterface.media.ExifInterface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.*
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
@@ -37,8 +36,7 @@ import com.google.android.gms.ads.MobileAds
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
-import java.io.File
-import java.io.FileOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
@@ -127,6 +125,13 @@ class MainActivity : ComponentActivity() {
         uri?.let { loadBitmapSafely(it) }
     }
 
+    // 여러 장 일괄 메타 제거용 다중 선택 런처
+    private val pickMultipleMedia = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(50)
+    ) { uris ->
+        if (uris.isNotEmpty()) runBatchClean(uris)
+    }
+
     // 원본 파일/문서 선택 런처 (GPS 및 전체 EXIF 메타데이터 보존)
     private val pickDocument = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { loadBitmapSafely(it) }
@@ -146,6 +151,15 @@ class MainActivity : ComponentActivity() {
                 targetFolderUriString = uri.toString()
                 Toast.makeText(this, "폴더가 선택되었습니다.", Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    // 원본 삭제 시스템 확인창 결과
+    private val deleteOriginalLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            Toast.makeText(this, "원본 사진을 삭제했습니다.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -418,11 +432,17 @@ class MainActivity : ComponentActivity() {
         val btnPick = createPillToolButton("📂 사진 열기") {
             showPhotoSourceDialog()
         }
+        val btnAutoText = createPillToolButton("🔎 개인정보 자동감지") {
+            detectSensitiveInfo()
+        }
         val btnAutoFace = createPillToolButton("👤 얼굴 자동가림") {
             detectFacesAndMosaic()
         }
         val btnFastClean = createPillToolButton("⚡ 빠른 메타삭제") {
             quickCleanAndSave()
+        }
+        val btnBatch = createPillToolButton("🗂️ 여러 장 메타삭제") {
+            startBatchClean()
         }
         val btnResetZoom = createPillToolButton("⟲ 줌 리셋") {
             mosaicView.resetZoom()
@@ -436,8 +456,10 @@ class MainActivity : ComponentActivity() {
         }
 
         container.addView(btnPick)
+        container.addView(btnAutoText)
         container.addView(btnAutoFace)
         container.addView(btnFastClean)
+        container.addView(btnBatch)
         container.addView(btnResetZoom)
         container.addView(btnClearAll)
         container.addView(btnFolder)
@@ -603,21 +625,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun openSafeInputStream(uri: Uri): java.io.InputStream? {
-        return try {
-            contentResolver.openInputStream(uri)
-        } catch (_: Exception) {
-            try {
-                if (uri.scheme == "file" || uri.path != null) {
-                    val path = uri.path ?: ""
-                    val file = File(path)
-                    if (file.exists()) java.io.FileInputStream(file) else null
-                } else null
-            } catch (_: Exception) {
-                null
-            }
-        }
-    }
+    private fun openSafeInputStream(uri: Uri): java.io.InputStream? = PhotoIo.openStream(this, uri)
 
     private fun createPillToolButton(text: String, onClick: () -> Unit): TextView {
         return TextView(this).apply {
@@ -700,7 +708,8 @@ class MainActivity : ComponentActivity() {
         }
         btnBrushSize.text = "● 굵기: ${currentBrushLevel.label}"
         mosaicView.brushScaleMultiplier = currentBrushLevel.scale
-        Toast.makeText(this, "브러시 굵기: ${currentBrushLevel.label}", Toast.LENGTH_SHORT).show()
+        // 현재 확대 배율 기준 실제 브러시 크기를 화면 중앙에 잠깐 표시
+        mosaicView.showBrushIndicator()
     }
 
     private fun View.addPressAnimation() {
@@ -726,7 +735,7 @@ class MainActivity : ComponentActivity() {
             "🖼️ 갤러리 사진 선택기 (간편 선택)",
             "📁 원본 파일 선택 (GPS 및 모든 메타데이터 보존 분석)"
         )
-        AlertDialog.Builder(this)
+        dialogBuilder()
             .setTitle("사진 불러오기 방식 선택")
             .setItems(options) { _, which ->
                 if (which == 0) {
@@ -752,17 +761,7 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, "사진 및 메타데이터 정밀 분석 중...", Toast.LENGTH_SHORT).show()
         thread {
             try {
-                val resolvedUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                    uri.authority == MediaStore.AUTHORITY
-                ) {
-                    try {
-                        MediaStore.setRequireOriginal(uri)
-                    } catch (_: Exception) {
-                        uri
-                    }
-                } else {
-                    uri
-                }
+                val resolvedUri = PhotoIo.resolveOriginal(uri)
 
                 // 1. EXIF 메타데이터 정밀 분석
                 var metadata: PhotoMetadata? = null
@@ -818,6 +817,8 @@ class MainActivity : ComponentActivity() {
                         ExifInterface.ORIENTATION_ROTATE_270 -> "270° 회전"
                         ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> "좌우 반전"
                         ExifInterface.ORIENTATION_FLIP_VERTICAL -> "상하 반전"
+                        ExifInterface.ORIENTATION_TRANSPOSE -> "90° 회전 + 좌우 반전"
+                        ExifInterface.ORIENTATION_TRANSVERSE -> "270° 회전 + 좌우 반전"
                         else -> "정방향 (0°)"
                     }
 
@@ -848,42 +849,8 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                // 2. 비트맵 디코딩 (메모리 한도 기반 최적 해상도 유지 및 OOM 방지)
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                openSafeInputStream(resolvedUri)?.use { BitmapFactory.decodeStream(it, null, options) }
-
-                val maxMemoryMb = Runtime.getRuntime().maxMemory() / (1024 * 1024)
-                val maxDim = if (maxMemoryMb >= 256) 6144 else 4096
-
-                var sampleSize = 1
-                while (options.outWidth / sampleSize > maxDim || options.outHeight / sampleSize > maxDim) {
-                    sampleSize *= 2
-                }
-
-                val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-                val rawBmp = openSafeInputStream(resolvedUri)?.use {
-                    BitmapFactory.decodeStream(it, null, decodeOptions)
-                } ?: throw Exception("이미지를 디코딩할 수 없습니다.")
-
-                // EXIF 회전 및 반전 보정
-                val rotation = openSafeInputStream(resolvedUri)?.use { stream ->
-                    val exif = ExifInterface(stream)
-                    when (exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
-                        ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-                        ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-                        ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-                        else -> 0f
-                    }
-                } ?: 0f
-
-                val finalBmp = if (rotation != 0f) {
-                    val mat = Matrix().apply { postRotate(rotation) }
-                    val rotated = Bitmap.createBitmap(rawBmp, 0, 0, rawBmp.width, rawBmp.height, mat, true)
-                    rawBmp.recycle()
-                    rotated
-                } else {
-                    rawBmp
-                }
+                // 2. 비트맵 디코딩 (메모리 한도 내 최대 해상도 + EXIF 회전/반전 보정)
+                val finalBmp = PhotoIo.decodeUpright(this, resolvedUri, PhotoIo.maxDecodeDim())
 
                 currentMetadata = metadata?.copy(
                     width = finalBmp.width,
@@ -1044,7 +1011,7 @@ class MainActivity : ComponentActivity() {
         meta.mimeType?.let { addItem("파일 포맷", it) }
 
         val tvNotice = TextView(this).apply {
-            text = "\n🛡️ [사진정보 지우개 완벽 보호]\n앱에서 사진을 저장하면 위의 모든 위치, 기기 고유값, 촬영 일시 메타데이터(EXIF)가 100% 영구 파기됩니다."
+            text = "\n🛡️ [사진정보 지우개 보호 안내]\n앱에서 저장한 새 사진에는 위의 위치, 기기 정보, 촬영 일시 메타데이터(EXIF)가 포함되지 않습니다. (원본 파일은 그대로 유지)"
             setTextColor(colorTextSecondary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setLineSpacing(0f, 1.25f)
@@ -1052,7 +1019,7 @@ class MainActivity : ComponentActivity() {
         layout.addView(tvNotice)
         scroll.addView(layout)
 
-        AlertDialog.Builder(this)
+        dialogBuilder()
             .setTitle("사진 메타데이터 정밀 분석")
             .setView(scroll)
             .setPositiveButton("확인", null)
@@ -1077,8 +1044,24 @@ class MainActivity : ComponentActivity() {
         }
 
         Toast.makeText(this, "메타데이터 완전 삭제 처리 중...", Toast.LENGTH_SHORT).show()
+        val sourceUri = currentImageUri
         thread {
-            executeSaveBitmap(originalBmp, isQuickClean = true)
+            // 1순위: 원본 파일에서 메타데이터만 잘라내기 (재압축 없음 → 화질·해상도 그대로)
+            val cleaned = sourceUri
+                ?.let { PhotoIo.readBytes(this, it) }
+                ?.let { PhotoIo.stripLossless(it) }
+
+            if (cleaned != null) {
+                val mime = if (MetadataStripper.isPng(cleaned)) "image/png" else "image/jpeg"
+                val filename = "CLEAN_${System.currentTimeMillis()}.${PhotoIo.extensionFor(mime)}"
+                val savedUri = PhotoIo.save(this, filename, mime, targetFolderName, targetFolderUriString) {
+                    it.write(cleaned)
+                }
+                runOnUiThread { onImageSaved(savedUri, isQuickClean = true, mimeType = mime) }
+            } else {
+                // HEIC·WebP 등 무손실 처리가 불가능한 형식은 재인코딩으로 메타데이터 제거
+                executeSaveBitmap(originalBmp, isQuickClean = true)
+            }
         }
     }
 
@@ -1093,7 +1076,8 @@ class MainActivity : ComponentActivity() {
 
         thread {
             try {
-                val maxDim = 1280f
+                // 단체 사진 뒤쪽의 작은 얼굴까지 잡도록 분석 해상도를 넉넉히 유지
+                val maxDim = 1920f
                 val origW = originalBmp.width.toFloat()
                 val origH = originalBmp.height.toFloat()
                 val maxSide = maxOf(origW, origH)
@@ -1113,7 +1097,7 @@ class MainActivity : ComponentActivity() {
                 val image = InputImage.fromBitmap(analysisBmp, 0)
                 val options = FaceDetectorOptions.Builder()
                     .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
-                    .setMinFaceSize(0.08f)
+                    .setMinFaceSize(0.04f)
                     .build()
 
                 val detector = FaceDetection.getClient(options)
@@ -1167,13 +1151,205 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // 앱 테마는 항상 어두운 Material이라, 라이트 모드에서는 다이얼로그를 밝은 테마로 맞춰 글자가 보이도록 함
+    private fun dialogBuilder(): AlertDialog.Builder = AlertDialog.Builder(
+        this,
+        if (isNightMode) android.R.style.Theme_Material_Dialog_Alert
+        else android.R.style.Theme_Material_Light_Dialog_Alert
+    )
+
+    // 글자(OCR)·바코드에서 개인정보 자동 감지 → 사용자 확인 후 블랙바로 가림
+    private fun detectSensitiveInfo() {
+        val bmp = mosaicView.getBaseBitmap() ?: run {
+            Toast.makeText(this, "먼저 사진을 불러와주세요.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        Toast.makeText(this, "글자와 바코드에서 개인정보를 찾는 중...", Toast.LENGTH_SHORT).show()
+        thread {
+            try {
+                val findings = PrivacyScanner.scan(bmp)
+                runOnUiThread {
+                    // 분석 도중 다른 사진을 불러왔다면 좌표가 맞지 않으므로 무시
+                    if (mosaicView.getBaseBitmap() !== bmp) return@runOnUiThread
+                    if (findings.isEmpty()) {
+                        Toast.makeText(
+                            this,
+                            "자동으로 찾은 개인정보가 없습니다. 놓친 부분이 없는지 직접 확인해주세요.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        showSensitiveReviewDialog(findings)
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "개인정보 감지 실패: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun showSensitiveReviewDialog(findings: List<PrivacyScanner.Finding>) {
+        val grouped = findings.groupBy { it.category }
+        val categories = SensitiveTextMatcher.Category.entries.filter { it in grouped }
+        val checked = categories.associateWith { true }.toMutableMap()
+
+        fun selectedRects() = categories
+            .filter { checked[it] == true }
+            .flatMap { cat -> grouped.getValue(cat).map { it.rect } }
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        layout.addView(TextView(this).apply {
+            text = "빨간 점선으로 표시된 곳을 블랙바로 가립니다.\n자동 감지는 일부를 놓칠 수 있으니, 가린 뒤 사진 전체를 직접 확인해주세요."
+            setTextColor(colorTextSecondary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            setLineSpacing(0f, 1.2f)
+            setPadding(0, 0, 0, dp(8))
+        })
+        for (cat in categories) {
+            layout.addView(CheckBox(this).apply {
+                text = "${cat.label} (${grouped.getValue(cat).size}곳)"
+                isChecked = true
+                setTextColor(colorTextPrimary)
+                setOnCheckedChangeListener { _, isOn ->
+                    checked[cat] = isOn
+                    mosaicView.setPreview(selectedRects())
+                }
+            })
+        }
+
+        mosaicView.setPreview(selectedRects())
+        dialogBuilder()
+            .setTitle("개인정보 ${findings.size}곳 감지")
+            .setView(ScrollView(this).apply { addView(layout) })
+            .setPositiveButton("선택 항목 가리기") { _, _ ->
+                val rects = selectedRects()
+                mosaicView.clearPreview()
+                mosaicView.addBoxes(rects)
+                if (rects.isNotEmpty()) {
+                    Toast.makeText(this, "${rects.size}곳을 가렸습니다. 놓친 부분이 없는지 확인해주세요.", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("취소", null)
+            .setOnDismissListener { mosaicView.clearPreview() }
+            .show()
+    }
+
+    // 여러 장 일괄 메타데이터 제거
+    private fun startBatchClean() {
+        pickMultipleMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+    }
+
+    private fun runBatchClean(uris: List<Uri>) {
+        val cancelled = AtomicBoolean(false)
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = uris.size
+            progress = 0
+        }
+        val tvProgress = TextView(this).apply {
+            text = "0 / ${uris.size}"
+            setTextColor(colorTextPrimary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(0, dp(8), 0, 0)
+        }
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+            addView(TextView(this@MainActivity).apply {
+                text = "위치·기기·촬영일시 정보만 지웁니다. 얼굴이나 글자는 가려지지 않습니다."
+                setTextColor(colorTextSecondary)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+                setPadding(0, 0, 0, dp(10))
+            })
+            addView(progressBar)
+            addView(tvProgress)
+        }
+        val progressDialog = dialogBuilder()
+            .setTitle("여러 장 메타데이터 제거 중")
+            .setView(layout)
+            .setCancelable(false)
+            .setNegativeButton("중지") { _, _ -> cancelled.set(true) }
+            .show()
+
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val folderName = targetFolderName
+        val safUri = targetFolderUriString
+        val batchId = System.currentTimeMillis()
+
+        thread {
+            var lossless = 0
+            var reencoded = 0
+            var failed = 0
+            for ((index, uri) in uris.withIndex()) {
+                if (cancelled.get()) break
+                try {
+                    val cleaned = PhotoIo.readBytes(this, uri)?.let { PhotoIo.stripLossless(it) }
+                    val saved = if (cleaned != null) {
+                        val mime = if (MetadataStripper.isPng(cleaned)) "image/png" else "image/jpeg"
+                        val name = "CLEAN_${batchId}_${index + 1}.${PhotoIo.extensionFor(mime)}"
+                        PhotoIo.save(this, name, mime, folderName, safUri) { it.write(cleaned) }
+                            ?.also { lossless++ }
+                    } else {
+                        // HEIC·WebP 등: 다시 인코딩하면서 메타데이터 제거
+                        val bmp = PhotoIo.decodeUpright(this, uri, PhotoIo.maxDecodeDim())
+                        try {
+                            val isPng = bmp.hasAlpha()
+                            val mime = if (isPng) "image/png" else "image/jpeg"
+                            val name = "CLEAN_${batchId}_${index + 1}.${PhotoIo.extensionFor(mime)}"
+                            PhotoIo.save(this, name, mime, folderName, safUri) { out ->
+                                bmp.compress(
+                                    if (isPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
+                                    if (isPng) 100 else 95,
+                                    out
+                                )
+                            }?.also { reencoded++ }
+                        } finally {
+                            bmp.recycle()
+                        }
+                    }
+                    if (saved == null) failed++
+                } catch (_: Throwable) {
+                    failed++
+                }
+                runOnUiThread {
+                    progressBar.progress = index + 1
+                    tvProgress.text = "${index + 1} / ${uris.size}"
+                }
+            }
+
+            runOnUiThread {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                if (progressDialog.isShowing) progressDialog.dismiss()
+                val done = lossless + reencoded
+                val location = if (safUri != null) "지정한 폴더" else "Pictures/$folderName"
+                val summary = buildString {
+                    append("${done}장의 메타데이터를 지워 새로 저장했습니다.\n")
+                    append("• 화질 그대로(무손실): ${lossless}장\n")
+                    if (reencoded > 0) append("• 다시 인코딩(HEIC 등): ${reencoded}장\n")
+                    if (failed > 0) append("• 실패: ${failed}장\n")
+                    if (cancelled.get()) append("• 중지됨: ${uris.size - done - failed}장 처리 안 함\n")
+                    append("\n저장 위치: $location\n원본 사진은 그대로 남아 있습니다.")
+                }
+                dialogBuilder()
+                    .setTitle("일괄 처리 완료")
+                    .setMessage(summary)
+                    .setPositiveButton("확인", null)
+                    .show()
+            }
+        }
+    }
+
     private fun confirmClearAll() {
         if (!mosaicView.hasActions()) {
             Toast.makeText(this, "가려진 편집 내용이 없습니다.", Toast.LENGTH_SHORT).show()
             return
         }
 
-        AlertDialog.Builder(this)
+        dialogBuilder()
             .setTitle("편집 초기화")
             .setMessage("작업한 모든 모자이크와 가림 박스를 지우고 원본으로 되돌리시겠습니까?")
             .setPositiveButton("초기화") { _, _ ->
@@ -1219,7 +1395,7 @@ class MainActivity : ComponentActivity() {
         }
         dialogView.addView(btnSelectSaf)
 
-        val dialog = AlertDialog.Builder(this)
+        val dialog = dialogBuilder()
             .setTitle("저장 폴더 설정")
             .setView(dialogView)
             .setPositiveButton("저장") { _, _ ->
@@ -1274,90 +1450,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // 실제 비트맵 저장 및 EXIF 완전 파기 로직
+    // 비트맵을 새로 인코딩해 저장 (EXIF는 인코딩 과정에서 전부 사라짐)
     private fun executeSaveBitmap(bitmapToSave: Bitmap, isQuickClean: Boolean) {
         val isPng = currentMimeType == "image/png" || bitmapToSave.hasAlpha()
-        val ext = if (isPng) "png" else "jpg"
         val mime = if (isPng) "image/png" else "image/jpeg"
         val compressFormat = if (isPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
         val quality = if (isPng) 100 else 98
-        val filename = "CLEAN_${System.currentTimeMillis()}.$ext"
-        val safUriStr = targetFolderUriString
-        var savedUri: Uri? = null
+        val filename = "CLEAN_${System.currentTimeMillis()}.${PhotoIo.extensionFor(mime)}"
 
-        try {
-            // 1. SAF 사용자 지정 폴더 우선 시도
-            if (safUriStr != null) {
-                try {
-                    val treeUri = Uri.parse(safUriStr)
-                    val docUri = DocumentsContract.buildDocumentUriUsingTree(
-                        treeUri,
-                        DocumentsContract.getTreeDocumentId(treeUri)
-                    )
-                    val newFileUri = DocumentsContract.createDocument(
-                        contentResolver,
-                        docUri,
-                        mime,
-                        filename
-                    )
-
-                    if (newFileUri != null) {
-                        contentResolver.openOutputStream(newFileUri)?.use { out ->
-                            bitmapToSave.compress(compressFormat, quality, out)
-                        }
-                        savedUri = newFileUri
-                    }
-                } catch (_: Exception) {
-                    // SAF 실패 시 MediaStore로 폴백
-                }
-            }
-
-            // 2. MediaStore / Scoped Storage 공용 갤러리 저장
-            if (savedUri == null) {
-                val folderName = targetFolderName.ifEmpty { "PrivacyEraser" }
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val values = ContentValues().apply {
-                        put(MediaStore.Images.Media.DISPLAY_NAME, filename)
-                        put(MediaStore.Images.Media.MIME_TYPE, mime)
-                        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/$folderName")
-                        put(MediaStore.Images.Media.IS_PENDING, 1)
-                    }
-
-                    val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                    if (uri != null) {
-                        try {
-                            contentResolver.openOutputStream(uri)?.use { out ->
-                                bitmapToSave.compress(compressFormat, quality, out)
-                            }
-                            values.clear()
-                            values.put(MediaStore.Images.Media.IS_PENDING, 0)
-                            contentResolver.update(uri, values, null, null)
-                            savedUri = uri
-                        } catch (e: Exception) {
-                            contentResolver.delete(uri, null, null)
-                        }
-                    }
-                } else {
-                    // Android 9 이하 (SDK 26~28) 레거시 스토리지 처리
-                    try {
-                        val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-                        val targetDir = File(picturesDir, folderName)
-                        if (!targetDir.exists()) targetDir.mkdirs()
-
-                        val targetFile = File(targetDir, filename)
-                        FileOutputStream(targetFile).use { out ->
-                            bitmapToSave.compress(compressFormat, quality, out)
-                        }
-
-                        val values = ContentValues().apply {
-                            put(MediaStore.Images.Media.DISPLAY_NAME, filename)
-                            put(MediaStore.Images.Media.MIME_TYPE, mime)
-                            put(MediaStore.Images.Media.DATA, targetFile.absolutePath)
-                        }
-                        savedUri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                    } catch (_: Exception) {}
-                }
+        val savedUri = try {
+            PhotoIo.save(this, filename, mime, targetFolderName, targetFolderUriString) { out ->
+                bitmapToSave.compress(compressFormat, quality, out)
             }
         } finally {
             // 메모리 누수 방지: 내보내기용 임시 비트맵 안전 정리
@@ -1366,29 +1469,33 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        runOnUiThread {
-            if (savedUri != null) {
-                // UI를 메타데이터 제거 완료 상태로 갱신
-                currentMetadata = currentMetadata?.copy(isAlreadyClean = true)
-                updateExifUi(currentMetadata)
+        runOnUiThread { onImageSaved(savedUri, isQuickClean, mime) }
+    }
 
-                showSaveSuccessAndShareDialog(savedUri, isQuickClean, mime)
-            } else {
-                Toast.makeText(this, "저장에 실패했습니다. 저장소 권한을 확인해주세요.", Toast.LENGTH_SHORT).show()
-            }
+    private fun onImageSaved(savedUri: Uri?, isQuickClean: Boolean, mimeType: String) {
+        if (savedUri != null) {
+            // UI를 메타데이터 제거 완료 상태로 갱신
+            currentMetadata = currentMetadata?.copy(isAlreadyClean = true)
+            updateExifUi(currentMetadata)
+            showSaveSuccessAndShareDialog(savedUri, isQuickClean, mimeType)
+        } else {
+            Toast.makeText(this, "저장에 실패했습니다. 저장소 권한을 확인해주세요.", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun showSaveSuccessAndShareDialog(savedUri: Uri, isQuickClean: Boolean, mimeType: String) {
-        val title = if (isQuickClean) "메타데이터 완전 삭제 완료" else "개인정보 삭제 및 저장 완료"
-        val message = "사진이 갤러리에 안전하게 저장되었습니다.\n\n" +
-                "🛡️ [영구 파기된 개인정보 목록]\n" +
-                "• 집 주소 및 GPS 정밀 위치정보 제거\n" +
-                "• 카메라 및 스마트폰 고유 기종 식별값 제거\n" +
-                "• 촬영 시간 및 소프트웨어 메타데이터 제거\n\n" +
-                "이제 SNS, 중고거래, 커뮤니티에 안심하고 공유하세요!"
+        val title = if (isQuickClean) "메타데이터 삭제 완료" else "개인정보 삭제 및 저장 완료"
+        val originalUri = currentImageUri
+        val canDelete = canDeleteOriginal(originalUri)
+        val message = "개인정보를 지운 새 사진이 저장되었습니다.\n\n" +
+                "🛡️ [새 사진에서 제거된 정보]\n" +
+                "• GPS 위치정보\n" +
+                "• 카메라·스마트폰 기종 정보\n" +
+                "• 촬영 일시 및 소프트웨어 정보\n\n" +
+                "⚠️ 원본 사진은 갤러리에 그대로 남아 있습니다." +
+                (if (canDelete) " 필요하면 '원본 삭제'로 지울 수 있어요." else " 필요하면 갤러리에서 직접 삭제해주세요.")
 
-        AlertDialog.Builder(this)
+        val builder = dialogBuilder()
             .setTitle(title)
             .setMessage(message)
             .setPositiveButton("바로 공유하기") { _, _ ->
@@ -1410,8 +1517,55 @@ class MainActivity : ComponentActivity() {
                     Toast.makeText(this, "사진을 열 수 있는 갤러리 앱이 없습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
-            .setNegativeButton("확인", null)
-            .show()
+
+        if (canDelete && originalUri != null) {
+            builder.setNegativeButton("원본 삭제") { _, _ -> deleteOriginal(originalUri) }
+        } else {
+            builder.setNegativeButton("확인", null)
+        }
+        builder.show()
+    }
+
+    // 원본 삭제 가능 여부: 갤러리(MediaStore) 사진 또는 삭제를 지원하는 문서 URI
+    // (사진 선택기 URI는 임시 사본이라 삭제 불가)
+    private fun canDeleteOriginal(uri: Uri?): Boolean {
+        if (uri == null) return false
+        if (DocumentsContract.isDocumentUri(this, uri)) {
+            return try {
+                contentResolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_FLAGS), null, null, null)?.use { c ->
+                    c.moveToFirst() && (c.getInt(0) and DocumentsContract.Document.FLAG_SUPPORTS_DELETE) != 0
+                } ?: false
+            } catch (_: Exception) {
+                false
+            }
+        }
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                uri.authority == MediaStore.AUTHORITY &&
+                uri.path?.contains("picker") != true
+    }
+
+    private fun deleteOriginal(uri: Uri) {
+        if (DocumentsContract.isDocumentUri(this, uri)) {
+            dialogBuilder()
+                .setTitle("원본 사진 삭제")
+                .setMessage("원본 사진을 삭제할까요? 삭제하면 되돌릴 수 없습니다.")
+                .setPositiveButton("삭제") { _, _ ->
+                    val ok = try { DocumentsContract.deleteDocument(contentResolver, uri) } catch (_: Exception) { false }
+                    Toast.makeText(this, if (ok) "원본 사진을 삭제했습니다." else "원본을 삭제하지 못했습니다.", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("취소", null)
+                .show()
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                // 시스템이 직접 사용자에게 삭제 확인을 받음
+                val request = MediaStore.createDeleteRequest(contentResolver, listOf(uri))
+                deleteOriginalLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
+            } catch (_: Exception) {
+                Toast.makeText(this, "원본을 삭제하지 못했습니다. 갤러리에서 직접 삭제해주세요.", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     override fun onResume() {
@@ -1427,413 +1581,5 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         if (::adView.isInitialized) adView.destroy()
         super.onDestroy()
-    }
-}
-
-/**
- * 모자이크 캔버스 뷰
- * - 모자이크 브러시, 블랙바, 화이트바 지원
- * - 핀치 줌 / 팬 제스처 안정화 (단일 터치 오인식 방지 및 배율 제한)
- * - Undo (실행 취소) 및 Redo (다시 실행) 완벽 지원
- */
-class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
-
-    enum class Mode { MOSAIC, BLACK_BOX, WHITE_BOX }
-
-    companion object {
-        // 얼굴 긴 변을 몇 칸의 모자이크 블록으로 나눌지 (작을수록 강하게 가려짐)
-        private const val FACE_BLOCKS = 8
-    }
-
-    sealed class Action {
-        data class Stroke(val path: Path, val width: Float) : Action()
-        data class Box(val rect: RectF, val color: Int) : Action()
-        // pixels: 얼굴 영역을 축소한 저해상도 비트맵 (얼굴 크기 기준 블록 모자이크)
-        data class FaceMosaic(val rect: RectF, val pixels: Bitmap) : Action()
-    }
-
-    var mode: Mode = Mode.MOSAIC
-    var brushScaleMultiplier = 1.0f
-    var onHistoryChanged: (() -> Unit)? = null
-
-    private var baseBitmap: Bitmap? = null
-    private var pixelatedBitmap: Bitmap? = null
-
-    // 실행 취소 / 다시 실행 스택
-    private val actionList = mutableListOf<Action>()
-    private val redoList = mutableListOf<Action>()
-
-    private val mosaicStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-    }
-
-    private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-    }
-
-    // 얼굴 모자이크용: 필터링 없이 확대해야 블록이 뭉개지지 않고 선명하게 유지됨
-    private val faceBlockPaint = Paint().apply {
-        isFilterBitmap = false
-    }
-    private val faceClipPath = Path()
-
-    private val checkerboardPaint = Paint().apply {
-        val checkSize = (12 * context.resources.displayMetrics.density).toInt()
-        val pattern = Bitmap.createBitmap(checkSize * 2, checkSize * 2, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(pattern)
-        val p1 = Paint()
-        val p2 = Paint()
-
-        if (isNightMode) {
-            p1.color = Color.parseColor("#090D16")
-            p2.color = Color.parseColor("#131B2E")
-        } else {
-            p1.color = Color.parseColor("#ECEFF3")
-            p2.color = Color.parseColor("#DEE2E8")
-        }
-
-        canvas.drawRect(0f, 0f, checkSize.toFloat(), checkSize.toFloat(), p1)
-        canvas.drawRect(checkSize.toFloat(), 0f, (checkSize * 2).toFloat(), checkSize.toFloat(), p2)
-        canvas.drawRect(0f, checkSize.toFloat(), checkSize.toFloat(), (checkSize * 2).toFloat(), p2)
-        canvas.drawRect(checkSize.toFloat(), checkSize.toFloat(), (checkSize * 2).toFloat(), (checkSize * 2).toFloat(), p1)
-
-        shader = BitmapShader(pattern, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
-    }
-
-    private val baseFitMatrix = Matrix()
-    private val userTransformMatrix = Matrix()
-    private val totalDisplayMatrix = Matrix()
-    private val totalInverseMatrix = Matrix()
-
-    private var currentPath: Path? = null
-    private var startX = 0f
-    private var startY = 0f
-    private var currentRect: RectF? = null
-    private var baseBrushWidth = 60f
-
-    // 제스처 안정화 플래그
-    private var isMultiTouchActive = false
-    private var lastPanFocusX = 0f
-    private var lastPanFocusY = 0f
-    private var currentCumulativeScale = 1.0f
-
-    private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-        override fun onScale(detector: ScaleGestureDetector): Boolean {
-            val factor = detector.scaleFactor
-            val targetScale = currentCumulativeScale * factor
-
-            // 줌 배율 범위 제한: 0.6배 ~ 8.0배
-            if (targetScale in 0.6f..8.0f) {
-                currentCumulativeScale = targetScale
-                userTransformMatrix.postScale(factor, factor, detector.focusX, detector.focusY)
-                updateCombinedMatrices()
-                invalidate()
-            }
-            return true
-        }
-    })
-
-    fun getBaseBitmap(): Bitmap? = baseBitmap
-    fun hasActions(): Boolean = actionList.isNotEmpty()
-    fun canUndo(): Boolean = actionList.isNotEmpty()
-    fun canRedo(): Boolean = redoList.isNotEmpty()
-
-    fun setImage(bitmap: Bitmap) {
-        val oldBase = this.baseBitmap
-        if (oldBase != null && oldBase != bitmap && !oldBase.isRecycled) {
-            oldBase.recycle()
-        }
-        this.baseBitmap = bitmap
-        actionList.clear()
-        redoList.clear()
-        userTransformMatrix.reset()
-        currentCumulativeScale = 1.0f
-
-        // 이전 픽셀화 비트맵 안전 정리
-        pixelatedBitmap?.let { if (!it.isRecycled) it.recycle() }
-
-        val scale = 0.035f
-        val w = (bitmap.width * scale).toInt().coerceAtLeast(1)
-        val h = (bitmap.height * scale).toInt().coerceAtLeast(1)
-        val lowRes = Bitmap.createScaledBitmap(bitmap, w, h, false)
-        val pixelated = Bitmap.createScaledBitmap(lowRes, bitmap.width, bitmap.height, false)
-        lowRes.recycle()
-        this.pixelatedBitmap = pixelated
-
-        val shader = BitmapShader(pixelated, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-        mosaicStrokePaint.shader = shader
-        baseBrushWidth = (bitmap.width * 0.06f).coerceAtLeast(35f)
-
-        updateBaseMatrix()
-        invalidate()
-        onHistoryChanged?.invoke()
-    }
-
-    fun addFaceMosaics(rects: List<RectF>) {
-        val bmp = baseBitmap ?: return
-        if (rects.isEmpty()) return
-        redoList.clear()
-        for (rect in rects) {
-            val left = rect.left.toInt().coerceIn(0, bmp.width - 1)
-            val top = rect.top.toInt().coerceIn(0, bmp.height - 1)
-            val w = (rect.right.toInt() - left).coerceIn(1, bmp.width - left)
-            val h = (rect.bottom.toInt() - top).coerceIn(1, bmp.height - top)
-
-            // 얼굴 긴 변 기준 약 FACE_BLOCKS칸으로 나눔 → 얼굴이 아무리 커도 알아볼 수 없음
-            val blockSize = (maxOf(w, h) / FACE_BLOCKS.toFloat()).coerceAtLeast(1f)
-            val lowW = (w / blockSize).toInt().coerceAtLeast(1)
-            val lowH = (h / blockSize).toInt().coerceAtLeast(1)
-
-            val crop = Bitmap.createBitmap(bmp, left, top, w, h)
-            val pixels = Bitmap.createScaledBitmap(crop, lowW, lowH, true)
-            if (crop != pixels && crop != bmp) crop.recycle()
-
-            val cropRect = RectF(left.toFloat(), top.toFloat(), (left + w).toFloat(), (top + h).toFloat())
-            actionList.add(Action.FaceMosaic(cropRect, pixels))
-        }
-        invalidate()
-        onHistoryChanged?.invoke()
-    }
-
-    private fun drawFaceMosaic(canvas: Canvas, action: Action.FaceMosaic) {
-        faceClipPath.reset()
-        faceClipPath.addOval(action.rect, Path.Direction.CW)
-        canvas.save()
-        canvas.clipPath(faceClipPath)
-        canvas.drawBitmap(action.pixels, null, action.rect, faceBlockPaint)
-        canvas.restore()
-    }
-
-    fun undo(): Boolean {
-        if (actionList.isNotEmpty()) {
-            val lastAction = actionList.removeAt(actionList.size - 1)
-            redoList.add(lastAction)
-            invalidate()
-            onHistoryChanged?.invoke()
-            return true
-        }
-        return false
-    }
-
-    fun redo(): Boolean {
-        if (redoList.isNotEmpty()) {
-            val actionToRestore = redoList.removeAt(redoList.size - 1)
-            actionList.add(actionToRestore)
-            invalidate()
-            onHistoryChanged?.invoke()
-            return true
-        }
-        return false
-    }
-
-    fun clearAll() {
-        if (actionList.isNotEmpty()) {
-            actionList.clear()
-            redoList.clear()
-            invalidate()
-            onHistoryChanged?.invoke()
-        }
-    }
-
-    fun resetZoom() {
-        userTransformMatrix.reset()
-        currentCumulativeScale = 1.0f
-        updateCombinedMatrices()
-        invalidate()
-    }
-
-    private fun updateBaseMatrix() {
-        val bmp = baseBitmap ?: return
-        if (width == 0 || height == 0) return
-        baseFitMatrix.setRectToRect(
-            RectF(0f, 0f, bmp.width.toFloat(), bmp.height.toFloat()),
-            RectF(0f, 0f, width.toFloat(), height.toFloat()),
-            Matrix.ScaleToFit.CENTER
-        )
-        updateCombinedMatrices()
-    }
-
-    private fun updateCombinedMatrices() {
-        totalDisplayMatrix.set(baseFitMatrix)
-        totalDisplayMatrix.postConcat(userTransformMatrix)
-        totalDisplayMatrix.invert(totalInverseMatrix)
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        updateBaseMatrix()
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), checkerboardPaint)
-
-        val bmp = baseBitmap ?: return
-        canvas.save()
-        canvas.concat(totalDisplayMatrix)
-        canvas.drawBitmap(bmp, 0f, 0f, null)
-
-        val currentEffectiveBrushWidth = baseBrushWidth * brushScaleMultiplier
-
-        for (action in actionList) {
-            when (action) {
-                is Action.Stroke -> {
-                    mosaicStrokePaint.strokeWidth = action.width
-                    canvas.drawPath(action.path, mosaicStrokePaint)
-                }
-                is Action.Box -> {
-                    boxPaint.color = action.color
-                    canvas.drawRect(action.rect, boxPaint)
-                }
-                is Action.FaceMosaic -> {
-                    drawFaceMosaic(canvas, action)
-                }
-            }
-        }
-
-        currentPath?.let {
-            mosaicStrokePaint.strokeWidth = currentEffectiveBrushWidth
-            canvas.drawPath(it, mosaicStrokePaint)
-        }
-        currentRect?.let {
-            boxPaint.color = if (mode == Mode.WHITE_BOX) Color.WHITE else Color.BLACK
-            canvas.drawRect(it, boxPaint)
-        }
-
-        canvas.restore()
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (baseBitmap == null) return false
-
-        scaleDetector.onTouchEvent(event)
-
-        // 다중 터치 (핀치 줌 / 팬 이동)
-        if (event.pointerCount >= 2) {
-            isMultiTouchActive = true
-            currentPath = null
-            currentRect = null
-
-            val focusX = (event.getX(0) + event.getX(1)) / 2f
-            val focusY = (event.getY(0) + event.getY(1)) / 2f
-
-            if (event.actionMasked == MotionEvent.ACTION_MOVE && lastPanFocusX != 0f) {
-                val dx = focusX - lastPanFocusX
-                val dy = focusY - lastPanFocusY
-                userTransformMatrix.postTranslate(dx, dy)
-                updateCombinedMatrices()
-                invalidate()
-            }
-            lastPanFocusX = focusX
-            lastPanFocusY = focusY
-            return true
-        }
-
-        // 손가락 하나를 뗐을 때 단일 터치로 오인식하여 선이 그려지는 버그 방지
-        if (event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
-            isMultiTouchActive = true
-            lastPanFocusX = 0f
-            lastPanFocusY = 0f
-            return true
-        }
-
-        // 마지막 손가락까지 완전히 떼어졌을 때만 다중터치 플래그 해제
-        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
-            lastPanFocusX = 0f
-            lastPanFocusY = 0f
-            if (isMultiTouchActive) {
-                isMultiTouchActive = false
-                currentPath = null
-                currentRect = null
-                invalidate()
-                return true
-            }
-        }
-
-        if (isMultiTouchActive) {
-            return true
-        }
-
-        lastPanFocusX = 0f
-        lastPanFocusY = 0f
-
-        val pts = floatArrayOf(event.x, event.y)
-        totalInverseMatrix.mapPoints(pts)
-        val x = pts[0]
-        val y = pts[1]
-
-        val currentEffectiveBrushWidth = baseBrushWidth * brushScaleMultiplier
-
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                startX = x
-                startY = y
-                if (mode == Mode.MOSAIC) {
-                    currentPath = Path().apply { moveTo(x, y) }
-                } else {
-                    currentRect = RectF(x, y, x, y)
-                }
-                invalidate()
-                return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (mode == Mode.MOSAIC) {
-                    currentPath?.lineTo(x, y)
-                } else {
-                    currentRect?.set(minOf(startX, x), minOf(startY, y), maxOf(startX, x), maxOf(startY, y))
-                }
-                invalidate()
-                return true
-            }
-            MotionEvent.ACTION_UP -> {
-                redoList.clear()
-                if (mode == Mode.MOSAIC) {
-                    currentPath?.let { path ->
-                        if (startX == x && startY == y) {
-                            path.lineTo(x + 0.1f, y + 0.1f)
-                        }
-                        actionList.add(Action.Stroke(path, currentEffectiveBrushWidth))
-                    }
-                    currentPath = null
-                } else {
-                    val boxColor = if (mode == Mode.WHITE_BOX) Color.WHITE else Color.BLACK
-                    currentRect?.let { r ->
-                        if (r.width() >= 6f && r.height() >= 6f) {
-                            actionList.add(Action.Box(RectF(r), boxColor))
-                        }
-                    }
-                    currentRect = null
-                }
-                invalidate()
-                onHistoryChanged?.invoke()
-                return true
-            }
-        }
-        return super.onTouchEvent(event)
-    }
-
-    fun exportBitmap(): Bitmap? {
-        val bmp = baseBitmap ?: return null
-        val result = bmp.copy(Bitmap.Config.ARGB_8888, true)
-        val canvas = Canvas(result)
-
-        for (action in actionList) {
-            when (action) {
-                is Action.Stroke -> {
-                    mosaicStrokePaint.strokeWidth = action.width
-                    canvas.drawPath(action.path, mosaicStrokePaint)
-                }
-                is Action.Box -> {
-                    boxPaint.color = action.color
-                    canvas.drawRect(action.rect, boxPaint)
-                }
-                is Action.FaceMosaic -> {
-                    drawFaceMosaic(canvas, action)
-                }
-            }
-        }
-        return result
     }
 }

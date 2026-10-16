@@ -1,0 +1,104 @@
+package com.example.myapplication009
+
+/**
+ * OCR로 읽은 한 줄의 단어 목록에서 개인정보를 찾아, 가려야 할 단어 위치를 돌려주는 순수 로직
+ * (안드로이드 의존성이 없어 단위 테스트 가능)
+ *
+ * OCR은 글자를 놓치거나 잘못 읽을 수 있으므로 결과는 반드시 사용자 확인을 거쳐 적용해야 함
+ */
+object SensitiveTextMatcher {
+
+    enum class Category(val label: String) {
+        RRN("주민등록번호·외국인등록번호"),
+        PHONE("전화번호"),
+        EMAIL("이메일"),
+        ACCOUNT("계좌·카드번호"),
+        LONG_NUMBER("송장번호 등 긴 숫자"),
+        ADDRESS("주소"),
+        LABELED_LINE("이름·연락처 표기 줄"),
+        BARCODE("바코드·QR코드")
+    }
+
+    /** category 종류의 정보가 tokenIndices 위치의 단어들에 들어 있음 */
+    data class Match(val category: Category, val tokenIndices: IntRange)
+
+    private val D = "[0-9]"
+
+    // 숫자 패턴: 앞뒤가 숫자가 아니어야 함 (더 긴 숫자의 일부를 잘못 잡지 않도록)
+    private val numberPatterns: List<Pair<Category, Regex>> = listOf(
+        // 생년월일 6자리 + 성별 1자리 + 6자리 (뒷자리 일부가 * 로 가려진 경우 포함)
+        Category.RRN to Regex("(?<![0-9])$D{2}(0[1-9]|1[0-2])(0[1-9]|[12]$D|3[01])\\s?[-–~]?\\s?[1-8][0-9*xX]{6}(?![0-9])"),
+        // 휴대폰·안심번호(050x)·인터넷전화·지역번호
+        Category.PHONE to Regex("(?<![0-9])(01[016789]|050$D|070|080|02|0[3-6][1-5])\\s?[-.)]?\\s?[0-9*]{3,4}\\s?[-.]?\\s?[0-9*]{4}(?![0-9])"),
+        Category.EMAIL to Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"),
+        // 카드번호 4-4-4-4
+        Category.ACCOUNT to Regex("(?<![0-9])$D{4}[- ]$D{4}[- ]$D{4}[- ]$D{3,4}(?![0-9])"),
+        // 하이픈으로 나뉜 계좌번호 (숫자 합계 10~16자리는 아래에서 확인)
+        Category.ACCOUNT to Regex("(?<![0-9])$D{2,6}-$D{2,6}-$D{2,7}(-$D{1,3})?(?![0-9])"),
+        // 송장번호 등 10~14자리 숫자 (하이픈 포함 가능)
+        Category.LONG_NUMBER to Regex("(?<![0-9])$D{10,14}(?![0-9])"),
+        Category.LONG_NUMBER to Regex("(?<![0-9])$D{4}-$D{4}-$D{4,6}(?![0-9])")
+    )
+
+    // 줄 전체를 가리는 패턴
+    private val addressPatterns = listOf(
+        Regex("[가-힣0-9]+(로|길)\\s?$D+"),                     // 도로명 주소: 테헤란로 123, 성수이로7길 4
+        Regex("[가-힣]+(동|읍|면|리)\\s?$D+(-$D+)?(번지)?"),     // 지번 주소: 역삼동 123-4
+        Regex("$D+동\\s?$D+호"),                                // 101동 1203호
+        Regex("$D+호(?![가-힣])"),
+        Regex("(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|충청|전북|전남|전라|경북|경남|경상|제주)[가-힣]*\\s+[가-힣]+(시|군|구)")
+    )
+
+    private val labelPattern = Regex(
+        "(받는\\s?분|보내는\\s?분|받는\\s?사람|보내는\\s?사람|수령인|수취인|수하인|송하인|성\\s?명|고객명|예금주|연락처|휴대폰|핸드폰|전화번호|주\\s?소|생년월일|주민등록)"
+    )
+
+    /**
+     * @param tokens OCR 한 줄의 단어들 (순서대로)
+     */
+    fun findMatches(tokens: List<String>): List<Match> {
+        if (tokens.isEmpty()) return emptyList()
+
+        // 단어를 공백으로 이어 붙이고 각 단어의 문자 범위를 기억
+        val starts = IntArray(tokens.size)
+        val sb = StringBuilder()
+        tokens.forEachIndexed { i, t ->
+            if (i > 0) sb.append(' ')
+            starts[i] = sb.length
+            sb.append(t)
+        }
+        val line = sb.toString()
+
+        val wholeLine = 0 until tokens.size
+        if (labelPattern.containsMatchIn(line)) {
+            return listOf(Match(Category.LABELED_LINE, wholeLine))
+        }
+        if (addressPatterns.any { it.containsMatchIn(line) }) {
+            return listOf(Match(Category.ADDRESS, wholeLine))
+        }
+
+        val claimed = BooleanArray(line.length)
+        val result = mutableListOf<Match>()
+        for ((category, regex) in numberPatterns) {
+            for (m in regex.findAll(line)) {
+                val range = m.range
+                if (range.any { claimed[it] }) continue
+                if (category == Category.ACCOUNT && m.value.count { it.isDigit() } !in 10..16) continue
+                range.forEach { claimed[it] = true }
+
+                val first = tokenAt(starts, range.first)
+                val last = tokenAt(starts, range.last)
+                result.add(Match(category, first..last))
+            }
+        }
+        return result
+    }
+
+    private fun tokenAt(starts: IntArray, charIndex: Int): Int {
+        var idx = 0
+        for (i in starts.indices) {
+            if (starts[i] <= charIndex) idx = i else break
+        }
+        return idx
+    }
+}
