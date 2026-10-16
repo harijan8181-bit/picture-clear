@@ -1,7 +1,6 @@
 package com.harijan.exiferaser
 
 import android.annotation.SuppressLint
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -400,23 +399,21 @@ class MainActivity : ComponentActivity() {
 
     private fun showIncomingShareDialog(uris: List<Uri>) {
         val single = uris.size == 1
-        val options = mutableListOf(
-            getString(R.string.show_incoming_share_dialog_1),
-            getString(R.string.show_incoming_share_dialog_2)
-        )
-        if (single) options.add(getString(R.string.show_incoming_share_dialog_3))
-
-        dialogBuilder()
-            .setTitle(if (single) getString(R.string.show_incoming_share_dialog_4) else getString(R.string.show_incoming_share_dialog_5, uris.size))
-            .setItems(options.toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> runBatchClean(uris, shareAfter = true)
-                    1 -> runBatchClean(uris, shareAfter = false)
-                    2 -> loadBitmapSafely(uris[0])
-                }
+        val dialog = appDialog()
+            .icon(R.drawable.ic_photo_library)
+            .title(if (single) getString(R.string.show_incoming_share_dialog_4) else getString(R.string.show_incoming_share_dialog_5, uris.size))
+            .option(R.drawable.ic_bolt, getString(R.string.share_opt_share_title), getString(R.string.share_opt_share_sub)) {
+                runBatchClean(uris, shareAfter = true)
             }
-            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
-            .show()
+            .option(R.drawable.ic_folder, getString(R.string.share_opt_save_title), getString(R.string.share_opt_save_sub)) {
+                runBatchClean(uris, shareAfter = false)
+            }
+        if (single) {
+            dialog.option(R.drawable.ic_face, getString(R.string.share_opt_edit_title), getString(R.string.share_opt_edit_sub)) {
+                loadBitmapSafely(uris[0])
+            }
+        }
+        dialog.dismissButton(getString(R.string.show_incoming_share_dialog_6)).show()
     }
 
     /** 정리된 사진을 다른 앱(카톡, 당근 등)으로 공유 */
@@ -1055,15 +1052,16 @@ class MainActivity : ComponentActivity() {
         val adOptionsRequired = consentInformation?.privacyOptionsRequirementStatus ==
                 ConsentInformation.PrivacyOptionsRequirementStatus.REQUIRED
 
-        val builder = dialogBuilder()
-            .setTitle(getString(R.string.show_privacy_info_dialog_1))
-            .setMessage(
+        val dialog = appDialog()
+            .icon(R.drawable.ic_shield)
+            .title(accessibleLabel(getString(R.string.show_privacy_info_dialog_1)))
+            .message(
                 getString(R.string.show_privacy_info_dialog_2) +
                         getString(R.string.show_privacy_info_dialog_3) +
                         getString(R.string.show_privacy_info_dialog_4)
             )
-            .setPositiveButton(getString(R.string.show_privacy_info_dialog_5), null)
-            .setNeutralButton(getString(R.string.show_privacy_info_dialog_6)) { _, _ ->
+            .primary(getString(R.string.show_privacy_info_dialog_5)) {}
+            .secondary(getString(R.string.show_privacy_info_dialog_6)) {
                 try {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL)))
                 } catch (_: Exception) {
@@ -1071,11 +1069,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         if (adOptionsRequired) {
-            builder.setNegativeButton(getString(R.string.show_privacy_info_dialog_8)) { _, _ ->
+            dialog.dismissButton(getString(R.string.show_privacy_info_dialog_8)) {
                 UserMessagingPlatform.showPrivacyOptionsForm(this) { _ -> }
             }
         }
-        builder.show()
+        dialog.show()
     }
 
     private fun openSafeInputStream(uri: Uri): java.io.InputStream? = PhotoIo.openStream(this, uri)
@@ -1161,21 +1159,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showPhotoSourceDialog() {
-        val options = arrayOf(
-            getString(R.string.show_photo_source_dialog_1),
-            getString(R.string.show_photo_source_dialog_2)
-        )
-        dialogBuilder()
-            .setTitle(getString(R.string.show_photo_source_dialog_3))
-            .setItems(options) { _, which ->
-                if (which == 0) {
-                    pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                } else {
-                    // 위치정보가 가려지지 않은 원본을 분석하려면 사진 권한 필요 (거부해도 파일 선택은 진행)
-                    withMediaPermission { pickDocument.launch(arrayOf("image/*")) }
-                }
+        appDialog()
+            .icon(R.drawable.ic_photo_add)
+            .title(getString(R.string.show_photo_source_dialog_3))
+            .option(R.drawable.ic_photo_library, getString(R.string.opt_gallery_title), getString(R.string.opt_gallery_sub)) {
+                pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             }
-            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
+            .option(R.drawable.ic_folder, getString(R.string.opt_file_title), getString(R.string.opt_file_sub)) {
+                // 위치정보가 가려지지 않은 원본을 분석하려면 사진 권한 필요 (거부해도 파일 선택은 진행)
+                withMediaPermission { pickDocument.launch(arrayOf("image/*")) }
+            }
+            .dismissButton(getString(R.string.show_incoming_share_dialog_6))
             .show()
     }
 
@@ -1379,42 +1373,45 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val scroll = ScrollView(this)
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(16), dp(20), dp(16))
         }
+        // 항목을 묶는 둥근 카드 (섹션마다 하나)
+        var section: LinearLayout = layout
 
         fun addSectionHeader(title: String) {
-            val tvSection = TextView(this).apply {
-                text = title
-                setTextColor(Color.parseColor("#6366F1"))
+            layout.addView(TextView(this).apply {
+                text = accessibleLabel(title)
+                setTextColor(colorPrimary)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                 typeface = Typeface.DEFAULT_BOLD
-                setPadding(0, dp(10), 0, dp(4))
+                setPadding(dp(4), if (layout.childCount == 0) 0 else dp(14), 0, dp(6))
+            })
+            section = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(6), dp(14), dp(6))
+                background = rounded(colorSegmentBg, 16)
             }
-            layout.addView(tvSection)
+            layout.addView(section)
         }
 
         fun addItem(title: String, value: String, isWarning: Boolean = false) {
-            val itemLayout = LinearLayout(this).apply {
+            section.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, dp(4), 0, dp(4))
-            }
-            val tvTitle = TextView(this).apply {
-                text = title
-                setTextColor(colorTextSecondary)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            }
-            val tvValue = TextView(this).apply {
-                text = value
-                setTextColor(if (isWarning) Color.parseColor("#EF4444") else colorTextPrimary)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-                typeface = if (isWarning) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            }
-            itemLayout.addView(tvTitle)
-            itemLayout.addView(tvValue)
-            layout.addView(itemLayout)
+                setPadding(0, dp(6), 0, dp(6))
+                addView(TextView(this@MainActivity).apply {
+                    text = title
+                    setTextColor(colorTextSecondary)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = value
+                    setTextColor(if (isWarning) colorWarningText else colorTextPrimary)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
+                    typeface = if (isWarning) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                    setPadding(0, dp(2), 0, 0)
+                })
+            })
         }
 
         // 1. 위치 정보
@@ -1459,22 +1456,23 @@ class MainActivity : ComponentActivity() {
         meta.orientationDesc?.let { addItem(getString(R.string.show_exif_details_dialog_24), it) }
         meta.mimeType?.let { addItem(getString(R.string.show_exif_details_dialog_25), it) }
 
-        val tvNotice = TextView(this).apply {
-            text = getString(R.string.show_exif_details_dialog_26)
+        layout.addView(TextView(this).apply {
+            text = getString(R.string.show_exif_details_dialog_26).trim()
             setTextColor(colorTextSecondary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setLineSpacing(0f, 1.25f)
-        }
-        layout.addView(tvNotice)
-        scroll.addView(layout)
+            setLineSpacing(0f, 1.3f)
+            setPadding(dp(4), dp(16), dp(4), 0)
+        })
 
-        dialogBuilder()
-            .setTitle(getString(R.string.show_exif_details_dialog_27))
-            .setView(scroll)
-            .setPositiveButton(getString(R.string.show_privacy_info_dialog_5), null)
-            .setNeutralButton(getString(R.string.show_exif_details_dialog_28)) { _, _ ->
-                quickCleanAndSave()
-            }
+        appDialog()
+            .icon(
+                if (meta.hasGps) R.drawable.ic_location_off else R.drawable.ic_info,
+                if (meta.hasGps) AppDialog.Tone.DANGER else AppDialog.Tone.PRIMARY
+            )
+            .title(getString(R.string.show_exif_details_dialog_27))
+            .content(layout, scroll = true)
+            .primary(accessibleLabel(getString(R.string.show_exif_details_dialog_28))) { quickCleanAndSave() }
+            .dismissButton(getString(R.string.show_privacy_info_dialog_5))
             .show()
     }
 
@@ -1603,11 +1601,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // 앱 테마는 항상 어두운 Material이라, 라이트 모드에서는 다이얼로그를 밝은 테마로 맞춰 글자가 보이도록 함
-    private fun dialogBuilder(): AlertDialog.Builder = AlertDialog.Builder(
+    /** 앱 디자인에 맞춘 팝업 (색은 현재 라이트·다크 테마를 따름) */
+    private fun appDialog() = AppDialog(
         this,
-        if (isNightMode) android.R.style.Theme_Material_Dialog_Alert
-        else android.R.style.Theme_Material_Light_Dialog_Alert
+        DialogPalette(
+            surface = colorBar,
+            surfaceVariant = colorSegmentBg,
+            border = colorBorder,
+            textPrimary = colorTextPrimary,
+            textSecondary = colorTextSecondary,
+            primary = colorPrimary,
+            primarySoft = colorPrimarySoft,
+            ripple = colorRipple,
+            danger = if (isNightMode) Color.parseColor("#F87171") else Color.parseColor("#EF4444"),
+            dangerSoft = if (isNightMode) Color.parseColor("#3A1A20") else Color.parseColor("#FDECEC"),
+            success = if (isNightMode) Color.parseColor("#34D399") else Color.parseColor("#10B981"),
+            successSoft = if (isNightMode) Color.parseColor("#123A2E") else Color.parseColor("#E7F8F1")
+        )
     )
 
     // 글자(OCR)·바코드에서 개인정보 자동 감지 → 사용자 확인 후 블랙바로 가림
@@ -1664,22 +1674,22 @@ class MainActivity : ComponentActivity() {
             .filter { checked[it] == true }
             .flatMap { cat -> grouped.getValue(cat).map { it.rect } }
 
+        // 항목마다 체크할 수 있는 둥근 카드 (체크를 바꾸면 사진 위 빨간 점선 미리보기도 바로 바뀜)
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), dp(4))
         }
-        layout.addView(TextView(this).apply {
-            text = getString(R.string.show_sensitive_review_dialog_1)
-            setTextColor(colorTextSecondary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-            setLineSpacing(0f, 1.2f)
-            setPadding(0, 0, 0, dp(8))
-        })
         for (cat in categories) {
             layout.addView(CheckBox(this).apply {
                 text = getString(R.string.show_sensitive_review_dialog_2, getString(categoryLabelRes(cat)), grouped.getValue(cat).size)
                 isChecked = true
                 setTextColor(colorTextPrimary)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                buttonTintList = ColorStateList.valueOf(colorPrimary)
+                setPadding(dp(6), 0, dp(12), 0)
+                background = withRipple(rounded(colorSegmentBg, 16))
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply {
+                    bottomMargin = dp(8)
+                }
                 setOnCheckedChangeListener { _, isOn ->
                     checked[cat] = isOn
                     mosaicView.setPreview(selectedRects())
@@ -1688,10 +1698,12 @@ class MainActivity : ComponentActivity() {
         }
 
         mosaicView.setPreview(selectedRects())
-        dialogBuilder()
-            .setTitle(getString(R.string.show_sensitive_review_dialog_3, findings.size))
-            .setView(ScrollView(this).apply { addView(layout) })
-            .setPositiveButton(getString(R.string.show_sensitive_review_dialog_4)) { _, _ ->
+        appDialog()
+            .icon(R.drawable.ic_search)
+            .title(getString(R.string.show_sensitive_review_dialog_3, findings.size))
+            .message(getString(R.string.show_sensitive_review_dialog_1))
+            .content(layout, scroll = true)
+            .primary(getString(R.string.show_sensitive_review_dialog_4)) {
                 val rects = selectedRects()
                 mosaicView.clearPreview()
                 mosaicView.addBoxes(rects)
@@ -1699,8 +1711,8 @@ class MainActivity : ComponentActivity() {
                     Toast.makeText(this, getString(R.string.show_sensitive_review_dialog_5, rects.size), Toast.LENGTH_LONG).show()
                 }
             }
-            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
-            .setOnDismissListener { mosaicView.clearPreview() }
+            .dismissButton(getString(R.string.show_incoming_share_dialog_6))
+            .onDismiss { mosaicView.clearPreview() }
             .show()
     }
 
@@ -1718,30 +1730,30 @@ class MainActivity : ComponentActivity() {
         val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = uris.size
             progress = 0
+            progressTintList = ColorStateList.valueOf(colorPrimary)
+            progressBackgroundTintList = ColorStateList.valueOf(colorSegmentBg)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(10))
         }
         val tvProgress = TextView(this).apply {
             text = "0 / ${uris.size}"
             setTextColor(colorTextPrimary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(0, dp(8), 0, 0)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, 0)
         }
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
-            addView(TextView(this@MainActivity).apply {
-                text = getString(R.string.run_batch_clean_1)
-                setTextColor(colorTextSecondary)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-                setPadding(0, 0, 0, dp(10))
-            })
             addView(progressBar)
             addView(tvProgress)
         }
-        val progressDialog = dialogBuilder()
-            .setTitle(if (shareAfter) getString(R.string.run_batch_clean_2) else getString(R.string.run_batch_clean_3))
-            .setView(layout)
-            .setCancelable(false)
-            .setNegativeButton(getString(R.string.run_batch_clean_4)) { _, _ -> cancelled.set(true) }
+        val progressDialog = appDialog()
+            .icon(if (shareAfter) R.drawable.ic_bolt else R.drawable.ic_photo_library)
+            .title(if (shareAfter) getString(R.string.run_batch_clean_2) else getString(R.string.run_batch_clean_3))
+            .message(getString(R.string.run_batch_clean_1))
+            .content(layout)
+            .cancelable(false)
+            .dismissButton(getString(R.string.run_batch_clean_4)) { cancelled.set(true) }
             .show()
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1816,10 +1828,14 @@ class MainActivity : ComponentActivity() {
                     if (cancelled.get()) append(getString(R.string.run_batch_clean_11, uris.size - done - failed))
                     append(getString(R.string.run_batch_clean_12, location))
                 }
-                dialogBuilder()
-                    .setTitle(getString(R.string.run_batch_clean_13))
-                    .setMessage(summary)
-                    .setPositiveButton(getString(R.string.show_privacy_info_dialog_5), null)
+                appDialog()
+                    .icon(
+                        if (failed > 0) R.drawable.ic_info else R.drawable.ic_check,
+                        if (failed > 0) AppDialog.Tone.PRIMARY else AppDialog.Tone.SUCCESS
+                    )
+                    .title(getString(R.string.run_batch_clean_13))
+                    .message(summary)
+                    .primary(getString(R.string.show_privacy_info_dialog_5)) {}
                     .show()
             }
         }
@@ -1831,31 +1847,23 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        dialogBuilder()
-            .setTitle(getString(R.string.confirm_clear_all_2))
-            .setMessage(getString(R.string.confirm_clear_all_3))
-            .setPositiveButton(getString(R.string.confirm_clear_all_4)) { _, _ ->
+        appDialog()
+            .icon(R.drawable.ic_delete, AppDialog.Tone.DANGER)
+            .title(getString(R.string.confirm_clear_all_2))
+            .message(getString(R.string.confirm_clear_all_3))
+            .primary(getString(R.string.confirm_clear_all_4), danger = true) {
                 mosaicView.clearAll()
                 Toast.makeText(this, getString(R.string.confirm_clear_all_5), Toast.LENGTH_SHORT).show()
             }
-            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
+            .dismissButton(getString(R.string.show_incoming_share_dialog_6))
             .show()
     }
 
     private fun showFolderSettingDialog() {
+        val currentLoc = if (targetFolderUriString != null) getString(R.string.show_folder_setting_dialog_1) else "Pictures/$targetFolderName"
         val dialogView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(16), dp(20), dp(8))
         }
-
-        val tvInfo = TextView(this).apply {
-            val currentLoc = if (targetFolderUriString != null) getString(R.string.show_folder_setting_dialog_1) else "Pictures/$targetFolderName"
-            text = getString(R.string.show_folder_setting_dialog_2, currentLoc)
-            setTextColor(colorTextSecondary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-            setPadding(0, 0, 0, dp(10))
-        }
-        dialogView.addView(tvInfo)
 
         val editText = EditText(this).apply {
             setText(targetFolderName)
@@ -1863,24 +1871,40 @@ class MainActivity : ComponentActivity() {
             setSingleLine(true)
             setTextColor(colorTextPrimary)
             setHintTextColor(colorTextSecondary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            background = rounded(colorSegmentBg, 14)
+            setPadding(dp(16), 0, dp(16), 0)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52))
         }
         dialogView.addView(editText)
 
-        val btnSelectSaf = TextView(this).apply {
-            text = getString(R.string.show_folder_setting_dialog_4)
-            setTextColor(Color.parseColor("#4F46E5"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, dp(14), 0, dp(6))
-            addPressAnimation()
+        // 시스템 폴더 직접 지정 (목록형 버튼)
+        val btnSelectSaf = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(12), dp(4), dp(4))
+            isClickable = true
+            background = withRipple(rounded(Color.TRANSPARENT, 12))
+            addView(ImageView(this@MainActivity).apply {
+                setImageDrawable(tintedIcon(R.drawable.ic_folder, colorPrimary, 20))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = accessibleLabel(getString(R.string.show_folder_setting_dialog_4))
+                setTextColor(colorPrimary)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(dp(8), 0, 0, 0)
+            })
         }
         dialogView.addView(btnSelectSaf)
 
-        val dialog = dialogBuilder()
-            .setTitle(getString(R.string.show_folder_setting_dialog_5))
-            .setView(dialogView)
-            .setPositiveButton(getString(R.string.create_top_header_bar_7)) { _, _ ->
+        val dialog = appDialog()
+            .icon(R.drawable.ic_folder)
+            .title(getString(R.string.show_folder_setting_dialog_5))
+            .message(getString(R.string.show_folder_setting_dialog_2, currentLoc))
+            .content(dialogView)
+            .primary(getString(R.string.create_top_header_bar_7)) {
                 val newName = editText.text.toString().trim()
                 if (newName.isNotEmpty()) {
                     targetFolderName = newName
@@ -1888,20 +1912,18 @@ class MainActivity : ComponentActivity() {
                     Toast.makeText(this, getString(R.string.show_folder_setting_dialog_6, newName), Toast.LENGTH_SHORT).show()
                 }
             }
-            .setNeutralButton(getString(R.string.show_folder_setting_dialog_7)) { _, _ ->
+            .secondary(getString(R.string.show_folder_setting_dialog_7)) {
                 targetFolderName = "PrivacyEraser"
                 targetFolderUriString = null
                 Toast.makeText(this, getString(R.string.show_folder_setting_dialog_8), Toast.LENGTH_SHORT).show()
             }
-            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
-            .create()
+            .dismissButton(getString(R.string.show_incoming_share_dialog_6))
+            .show()
 
         btnSelectSaf.setOnClickListener {
             dialog.dismiss()
             openFolderTree.launch(null)
         }
-
-        dialog.show()
     }
 
     private fun getAdaptiveAdSize(): AdSize {
@@ -1951,10 +1973,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showOutOfMemoryMessage() {
-        dialogBuilder()
-            .setTitle(getString(R.string.show_out_of_memory_message_1))
-            .setMessage(getString(R.string.show_out_of_memory_message_2))
-            .setPositiveButton(getString(R.string.show_privacy_info_dialog_5), null)
+        appDialog()
+            .icon(R.drawable.ic_info, AppDialog.Tone.DANGER)
+            .title(getString(R.string.show_out_of_memory_message_1))
+            .message(getString(R.string.show_out_of_memory_message_2))
+            .primary(getString(R.string.show_privacy_info_dialog_5)) {}
             .show()
     }
 
@@ -1996,18 +2019,56 @@ class MainActivity : ComponentActivity() {
         val title = if (isQuickClean) getString(R.string.show_save_success_and_share_dialog_1) else getString(R.string.show_save_success_and_share_dialog_2)
         val originalUri = currentImageUri
         val canDelete = canDeleteOriginal(originalUri)
-        val message = getString(R.string.show_save_success_and_share_dialog_3) +
-                getString(R.string.show_save_success_and_share_dialog_4) +
-                getString(R.string.show_save_success_and_share_dialog_5) +
-                getString(R.string.show_save_success_and_share_dialog_6) +
-                getString(R.string.show_save_success_and_share_dialog_7) +
-                getString(R.string.show_save_success_and_share_dialog_8) +
-                (if (canDelete) getString(R.string.show_save_success_and_share_dialog_9) else getString(R.string.show_save_success_and_share_dialog_10))
+        // 제거된 정보를 체크 표시 목록으로 보여주는 카드
+        val successColor = if (isNightMode) Color.parseColor("#34D399") else Color.parseColor("#10B981")
+        val removedCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = rounded(colorSegmentBg, 16)
+            addView(TextView(this@MainActivity).apply {
+                text = accessibleLabel(getString(R.string.show_save_success_and_share_dialog_4)).trim()
+                    .removePrefix("[").removeSuffix("]")
+                setTextColor(colorTextSecondary)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, 0, 0, dp(6))
+            })
+            listOf(
+                R.string.show_save_success_and_share_dialog_5,
+                R.string.show_save_success_and_share_dialog_6,
+                R.string.show_save_success_and_share_dialog_7
+            ).forEach { res ->
+                addView(TextView(this@MainActivity).apply {
+                    text = getString(res).trim().removePrefix("•").trim()
+                    setTextColor(colorTextPrimary)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
+                    gravity = Gravity.CENTER_VERTICAL
+                    setCompoundDrawablesRelative(tintedIcon(R.drawable.ic_check, successColor, 18), null, null, null)
+                    compoundDrawablePadding = dp(10)
+                    setPadding(0, dp(5), 0, dp(5))
+                })
+            }
+        }
+        val originalNote = TextView(this).apply {
+            text = accessibleLabel(getString(R.string.show_save_success_and_share_dialog_8)) +
+                    (if (canDelete) getString(R.string.show_save_success_and_share_dialog_9) else getString(R.string.show_save_success_and_share_dialog_10))
+            setTextColor(colorTextSecondary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            setLineSpacing(0f, 1.3f)
+            setPadding(dp(4), dp(12), dp(4), 0)
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(removedCard)
+            addView(originalNote)
+        }
 
-        val builder = dialogBuilder()
-            .setTitle(title)
-            .setMessage(message)
-            .setPositiveButton(getString(R.string.show_save_success_and_share_dialog_11)) { _, _ ->
+        val dialog = appDialog()
+            .icon(R.drawable.ic_check, AppDialog.Tone.SUCCESS)
+            .title(title)
+            .message(getString(R.string.show_save_success_and_share_dialog_3).trim())
+            .content(content)
+            .primary(getString(R.string.show_save_success_and_share_dialog_11)) {
                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                     type = mimeType
                     putExtra(Intent.EXTRA_STREAM, savedUri)
@@ -2015,7 +2076,7 @@ class MainActivity : ComponentActivity() {
                 }
                 startActivity(Intent.createChooser(shareIntent, getString(R.string.show_save_success_and_share_dialog_12)))
             }
-            .setNeutralButton(getString(R.string.show_save_success_and_share_dialog_13)) { _, _ ->
+            .secondary(getString(R.string.show_save_success_and_share_dialog_13)) {
                 val viewIntent = Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(savedUri, mimeType)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -2028,11 +2089,11 @@ class MainActivity : ComponentActivity() {
             }
 
         if (canDelete && originalUri != null) {
-            builder.setNegativeButton(getString(R.string.show_save_success_and_share_dialog_15)) { _, _ -> deleteOriginal(originalUri) }
+            dialog.dismissButton(getString(R.string.show_save_success_and_share_dialog_15)) { deleteOriginal(originalUri) }
         } else {
-            builder.setNegativeButton(getString(R.string.show_privacy_info_dialog_5), null)
+            dialog.dismissButton(getString(R.string.show_privacy_info_dialog_5))
         }
-        builder.show()
+        dialog.show()
     }
 
     // 원본 삭제 가능 여부: 갤러리(MediaStore) 사진 또는 삭제를 지원하는 문서 URI
@@ -2055,14 +2116,15 @@ class MainActivity : ComponentActivity() {
 
     private fun deleteOriginal(uri: Uri) {
         if (DocumentsContract.isDocumentUri(this, uri)) {
-            dialogBuilder()
-                .setTitle(getString(R.string.delete_original_1))
-                .setMessage(getString(R.string.delete_original_2))
-                .setPositiveButton(getString(R.string.delete_original_3)) { _, _ ->
+            appDialog()
+                .icon(R.drawable.ic_delete, AppDialog.Tone.DANGER)
+                .title(getString(R.string.delete_original_1))
+                .message(getString(R.string.delete_original_2))
+                .primary(getString(R.string.delete_original_3), danger = true) {
                     val ok = try { DocumentsContract.deleteDocument(contentResolver, uri) } catch (_: Exception) { false }
                     Toast.makeText(this, if (ok) getString(R.string.original_deleted) else getString(R.string.delete_original_4), Toast.LENGTH_SHORT).show()
                 }
-                .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
+                .dismissButton(getString(R.string.show_incoming_share_dialog_6))
                 .show()
             return
         }

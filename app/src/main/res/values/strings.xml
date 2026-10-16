@@ -182,4 +182,14 @@
     <string name="feature_location">위치정보 삭제</string>
     <string name="feature_face">얼굴 자동 가림</string>
     <string name="feature_text">송장·번호 가림</string>
+    <string name="opt_gallery_title">갤러리에서 선택</string>
+    <string name="opt_gallery_sub">가장 간편해요 · 위치정보는 시스템이 가린 채 전달돼요</string>
+    <string name="opt_file_title">원본 파일에서 선택</string>
+    <string name="opt_file_sub">위치정보까지 포함된 원본을 그대로 분석해요</string>
+    <string name="share_opt_share_title">정보 지우고 바로 공유</string>
+    <string name="share_opt_share_sub">화질 그대로 · 갤러리에 사본을 남기지 않아요</string>
+    <string name="share_opt_save_title">정보 지우고 갤러리에 저장</string>
+    <string name="share_opt_save_sub">원본은 그대로 두고 새 파일로 저장해요</string>
+    <string name="share_opt_edit_title">얼굴·글자 가리기</string>
+    <string name="share_opt_edit_sub">모자이크나 블랙바로 직접 가려요</string>
 </resources>
