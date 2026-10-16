@@ -12,7 +12,6 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
-import android.os.Build
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -66,33 +65,22 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
     var brushScaleMultiplier = 1.0f
     var onHistoryChanged: (() -> Unit)? = null
 
+    // 사진 비트맵은 직접 recycle하지 않음: 얼굴·개인정보 분석이나 저장이 백그라운드에서
+    // 이전 사진을 아직 쓰고 있을 수 있으므로, 참조가 모두 끝나면 GC가 정리하도록 둠
     private var baseBitmap: Bitmap? = null
 
-    // 블록 크기별로 사진을 아주 작게 줄인 비트맵의 셰이더. 확대해서 그릴 때 필터링을 끄면 모자이크 블록이 됨
-    // (원본 크기 픽셀화 비트맵을 따로 만들지 않아 메모리를 크게 아낌)
-    private val mosaicShaders = mutableMapOf<Int, Pair<Bitmap, BitmapShader>>()
+    // 화면 표시 전용 렌더러 (UI 스레드에서만 사용)
+    private var renderer: EditRenderer? = null
     private val currentPoints = ArrayList<Float>()
 
     // 실행 취소 / 다시 실행 스택
     private val actionList = mutableListOf<Action>()
     private val redoList = mutableListOf<Action>()
 
-    private val mosaicStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-        isFilterBitmap = false
-    }
-
+    // 블랙바·화이트바를 그리는 중일 때 미리보기용
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
     }
-
-    // 얼굴 모자이크용: 필터링 없이 확대해야 블록이 뭉개지지 않고 선명하게 유지됨
-    private val faceBlockPaint = Paint().apply {
-        isFilterBitmap = false
-    }
-    private val faceClipPath = Path()
 
     // 자동 감지 미리보기 (가리기 전 확인용)
     private var previewRects: List<RectF> = emptyList()
@@ -187,10 +175,6 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
     fun canRedo(): Boolean = redoList.isNotEmpty()
 
     fun setImage(bitmap: Bitmap) {
-        val oldBase = this.baseBitmap
-        if (oldBase != null && oldBase != bitmap && !oldBase.isRecycled) {
-            oldBase.recycle()
-        }
         this.baseBitmap = bitmap
         actionList.clear()
         redoList.clear()
@@ -198,9 +182,9 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
         userTransformMatrix.reset()
         currentCumulativeScale = 1.0f
 
-        // 이전 사진의 저해상도 비트맵 안전 정리
-        mosaicShaders.values.forEach { (bmp, _) -> if (!bmp.isRecycled) bmp.recycle() }
-        mosaicShaders.clear()
+        // 이전 사진의 화면용 저해상도 비트맵 정리 (화면 렌더러는 UI 스레드 전용이라 바로 해제해도 안전)
+        renderer?.release()
+        renderer = EditRenderer(bitmap)
 
         baseBrushWidth = (bitmap.width * 0.06f).coerceAtLeast(35f)
 
@@ -210,26 +194,6 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
     }
 
     private fun blockFor(brushWidth: Float) = maxOf(brushWidth / BRUSH_BLOCKS, MIN_BLOCK_PX)
-
-    /** 블록 크기에 맞는 모자이크 셰이더 (블록 크기별로 한 번만 생성) */
-    private fun shaderFor(block: Float): BitmapShader? {
-        val bmp = baseBitmap ?: return null
-        val key = block.toInt().coerceAtLeast(1)
-        mosaicShaders[key]?.let { return it.second }
-
-        val w = (bmp.width / key.toFloat()).toInt().coerceAtLeast(1)
-        val h = (bmp.height / key.toFloat()).toInt().coerceAtLeast(1)
-        val lowRes = Bitmap.createScaledBitmap(bmp, w, h, true)
-        // 작은 비트맵을 원본 크기로 늘려서 칠하는 셰이더 (최근접 보간 → 블록 모자이크)
-        val shader = BitmapShader(lowRes, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
-            setLocalMatrix(Matrix().apply { setScale(bmp.width / w.toFloat(), bmp.height / h.toFloat()) })
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                filterMode = BitmapShader.FILTER_MODE_NEAREST
-            }
-        }
-        mosaicShaders[key] = lowRes to shader
-        return shader
-    }
 
     private fun makeFaceMosaic(rect: RectF): Action.FaceMosaic? {
         val bmp = baseBitmap ?: return null
@@ -412,45 +376,21 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
         updateBaseMatrix()
     }
 
-    private fun drawAction(canvas: Canvas, action: Action) {
-        when (action) {
-            is Action.Stroke -> {
-                mosaicStrokePaint.shader = shaderFor(action.block)
-                mosaicStrokePaint.strokeWidth = action.width
-                canvas.drawPath(action.path, mosaicStrokePaint)
-            }
-            is Action.Box -> {
-                boxPaint.color = action.color
-                canvas.drawRect(action.rect, boxPaint)
-            }
-            is Action.FaceMosaic -> {
-                faceClipPath.reset()
-                faceClipPath.addOval(action.rect, Path.Direction.CW)
-                canvas.save()
-                canvas.clipPath(faceClipPath)
-                canvas.drawBitmap(action.pixels, null, action.rect, faceBlockPaint)
-                canvas.restore()
-            }
-            is Action.Group -> action.actions.forEach { drawAction(canvas, it) }
-        }
-    }
-
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), checkerboardPaint)
 
         val bmp = baseBitmap ?: return
+        val r = renderer ?: return
         canvas.save()
         canvas.concat(totalDisplayMatrix)
         canvas.drawBitmap(bmp, 0f, 0f, null)
 
-        for (action in actionList) drawAction(canvas, action)
+        for (action in actionList) r.draw(canvas, action)
 
         currentPath?.let {
             val brushWidth = baseBrushWidth * brushScaleMultiplier
-            mosaicStrokePaint.shader = shaderFor(blockFor(brushWidth))
-            mosaicStrokePaint.strokeWidth = brushWidth
-            canvas.drawPath(it, mosaicStrokePaint)
+            r.drawLiveStroke(canvas, it, brushWidth, blockFor(brushWidth))
         }
         currentRect?.let {
             boxPaint.color = if (mode == Mode.WHITE_BOX) Color.WHITE else Color.BLACK
@@ -613,11 +553,21 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
         return super.onTouchEvent(event)
     }
 
-    fun exportBitmap(): Bitmap? {
+    /**
+     * 저장용 작업 준비 (UI 스레드에서 호출)
+     * 지금 시점의 사진과 작업 목록을 복사해 두고, 실제 합성은 반환된 함수를 백그라운드에서 실행
+     * → 큰 사진도 저장 중에 화면이 멈추지 않음
+     */
+    fun prepareExport(): (() -> Bitmap)? {
         val bmp = baseBitmap ?: return null
-        val result = bmp.copy(Bitmap.Config.ARGB_8888, true)
-        val canvas = Canvas(result)
-        for (action in actionList) drawAction(canvas, action)
-        return result
+        val actions = actionList.toList()
+        return {
+            val exportRenderer = EditRenderer(bmp)
+            try {
+                exportRenderer.render(actions)
+            } finally {
+                exportRenderer.release()
+            }
+        }
     }
 }

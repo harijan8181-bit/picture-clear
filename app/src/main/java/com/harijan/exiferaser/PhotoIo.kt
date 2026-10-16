@@ -80,7 +80,7 @@ object PhotoIo {
         }
         val raw = openStream(context, uri)?.use {
             BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sampleSize })
-        } ?: throw IllegalStateException("이미지를 디코딩할 수 없습니다.")
+        } ?: throw IllegalStateException(context.getString(R.string.error_decode_failed))
 
         val matrix = orientationMatrix(readOrientation(context, uri)) ?: return raw
         val upright = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)

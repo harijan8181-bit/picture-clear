@@ -8,15 +8,8 @@ package com.harijan.exiferaser
  */
 object SensitiveTextMatcher {
 
-    enum class Category(val label: String) {
-        RRN("주민등록번호·외국인등록번호"),
-        PHONE("전화번호"),
-        EMAIL("이메일"),
-        ACCOUNT("계좌·카드번호"),
-        LONG_NUMBER("송장번호 등 긴 숫자"),
-        ADDRESS("주소"),
-        LABELED_LINE("이름·연락처 표기 줄"),
-        BARCODE("바코드·QR코드")
+    enum class Category {
+        RRN, PHONE, EMAIL, ACCOUNT, LONG_NUMBER, ADDRESS, LABELED_LINE, BARCODE
     }
 
     /** category 종류의 정보가 tokenIndices 위치의 단어들에 들어 있음 */

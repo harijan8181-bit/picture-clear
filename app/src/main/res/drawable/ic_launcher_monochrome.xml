@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 13+ 테마 아이콘(단색)용: 색 대신 모양만으로 구분되도록 겹치는 부분 없이 구성 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 사진 틀 (외곽선) -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3"
+        android:pathData="M34,32 h34 a4,4 0 0,1 4,4 v18 M58,72 h-24 a4,4 0 0,1 -4,-4 v-32 a4,4 0 0,1 4,-4" />
+
+    <!-- 해 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M40,42 m-3.5,0 a3.5,3.5 0 1,0 7,0 a3.5,3.5 0 1,0 -7,0" />
+
+    <!-- 산 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M33,66 L44,52 L51,60 L46,66 Z" />
+
+    <!-- 위치 핀 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M60,36 c-2.2,0 -4,1.8 -4,4 c0,3 4,7.2 4,7.2 c0,0 4,-4.2 4,-7.2 c0,-2.2 -1.8,-4 -4,-4 z M60,41.6 a1.5,1.5 0 1,1 0,-3 a1.5,1.5 0 1,1 0,3 z" />
+
+    <!-- 지우개 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M48,63 L59,52 L66,59 L55,70 Z" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.5"
+        android:strokeLineJoin="round"
+        android:pathData="M59.5,72.5 L70.5,61.5 L77,68 L66,79 Z" />
+</vector>

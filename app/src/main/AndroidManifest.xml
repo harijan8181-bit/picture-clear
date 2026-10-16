@@ -12,16 +12,16 @@
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="사진정보 지우개"
+        android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:largeHeap="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
-        <!-- 애드몹 공식 테스트 ID -->
+        <!-- 애드몹 앱 ID (디버그: 테스트 ID, 출시: release.properties 값) -->
         <meta-data
             android:name="com.google.android.gms.ads.APPLICATION_ID"
-            android:value="ca-app-pub-3940256099942544~3347511713"/>
+            android:value="${admobAppId}"/>
 
         <!-- ML Kit AI 모델(얼굴·한글 글자·바코드)을 설치 시 Play 서비스로 미리 내려받음 (앱 용량 절감) -->
         <meta-data

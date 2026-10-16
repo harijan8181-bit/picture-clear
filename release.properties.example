@@ -1,0 +1,14 @@
+# 출시용 설정 예시
+# 이 파일을 release.properties 로 복사한 뒤 실제 값을 채우세요.
+# release.properties 와 키스토어(.jks) 파일은 .gitignore 에 들어 있어 깃허브에 올라가지 않습니다.
+# 키스토어와 비밀번호를 잃어버리면 앱을 업데이트할 수 없으니 꼭 따로 백업하세요.
+
+# 서명 키 (프로젝트 폴더 기준 경로)
+storeFile=keystore/exiferaser-release.jks
+storePassword=비밀번호
+keyAlias=exiferaser
+keyPassword=비밀번호
+
+# AdMob 콘솔에서 발급받은 실제 ID
+admobAppId=ca-app-pub-0000000000000000~0000000000
+admobBannerId=ca-app-pub-0000000000000000/0000000000

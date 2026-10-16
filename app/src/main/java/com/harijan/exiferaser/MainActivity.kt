@@ -1,5 +1,6 @@
 package com.harijan.exiferaser
 
+import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Context
@@ -35,6 +36,9 @@ import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
 import com.google.android.gms.ads.MobileAds
+import com.google.android.ump.ConsentInformation
+import com.google.android.ump.ConsentRequestParameters
+import com.google.android.ump.UserMessagingPlatform
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
@@ -54,6 +58,10 @@ class MainActivity : ComponentActivity() {
         private const val STATE_HAS_IMAGE = "has_image"
         private const val STATE_IMAGE_URI = "image_uri"
         private const val STATE_MIME = "mime"
+
+        // 저장소의 docs/privacy-policy.md (GitHub Pages를 켜면 그 주소로 바꿔도 됨)
+        private const val PRIVACY_POLICY_URL =
+            "https://github.com/harijan8181-bit/picture-clear/blob/main/docs/privacy-policy.md"
     }
 
     // 사진 EXIF 메타데이터 데이터 클래스 (상세 분석용)
@@ -86,6 +94,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var mosaicView: MosaicView
     private lateinit var adView: AdView
     private lateinit var btnPickEmpty: TextView
+    private lateinit var tvPrivacyNote: TextView
     private lateinit var tvExifBadge: TextView
     private lateinit var bannerExifWarning: LinearLayout
     private lateinit var tvBannerText: TextView
@@ -112,10 +121,10 @@ class MainActivity : ComponentActivity() {
     private var colorWarningBg = 0
     private var colorWarningText = 0
 
-    enum class BrushLevel(val label: String, val scale: Float) {
-        SMALL("소", 0.5f),
-        MEDIUM("중", 1.0f),
-        LARGE("대", 2.0f)
+    enum class BrushLevel(val labelRes: Int, val scale: Float) {
+        SMALL(R.string.brush_small, 0.5f),
+        MEDIUM(R.string.brush_medium, 1.0f),
+        LARGE(R.string.brush_large, 2.0f)
     }
     private var currentBrushLevel = BrushLevel.MEDIUM
 
@@ -129,6 +138,11 @@ class MainActivity : ComponentActivity() {
         set(value) = prefs.edit().putString("folder_uri", value).apply()
 
     private var currentImageUri: Uri? = null
+    private var isSaving = false
+
+    // 광고 개인정보 동의(UMP) 상태
+    private var consentInformation: ConsentInformation? = null
+    private val adsInitialized = AtomicBoolean(false)
     private var currentMimeType: String? = null
 
     // 갤러리 사진 선택 런처 (Android Photo Picker)
@@ -157,10 +171,10 @@ class MainActivity : ComponentActivity() {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
                 targetFolderUriString = uri.toString()
-                Toast.makeText(this, "저장 폴더가 지정되었습니다.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.save_folder_set), Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 targetFolderUriString = uri.toString()
-                Toast.makeText(this, "폴더가 선택되었습니다.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.save_folder_selected), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -170,7 +184,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
         if (result.resultCode == RESULT_OK) {
-            Toast.makeText(this, "원본 사진을 삭제했습니다.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.original_deleted), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -237,7 +251,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        MobileAds.initialize(this) {}
 
         // Android 9 이하는 Pictures 폴더에 직접 파일을 쓰므로 쓰기 권한이 미리 필요
         // (그 외 사진 권한은 앱 시작 시 묻지 않고, 원본 파일 분석을 고를 때만 요청)
@@ -282,6 +295,7 @@ class MainActivity : ComponentActivity() {
         mosaicView = MosaicView(this, isNightMode).apply {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             onHistoryChanged = { updateUndoRedoButtons() }
+            contentDescription = getString(R.string.on_create_1)
         }
         canvasFrame.addView(mosaicView)
 
@@ -291,7 +305,7 @@ class MainActivity : ComponentActivity() {
 
         // 사진이 없을 때 표시되는 중앙 버튼
         btnPickEmpty = TextView(this).apply {
-            text = "+ 사진 불러오기"
+            text = getString(R.string.on_create_2)
             setTextColor(colorTextPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             typeface = Typeface.DEFAULT_BOLD
@@ -312,6 +326,22 @@ class MainActivity : ComponentActivity() {
             }
         }
         canvasFrame.addView(btnPickEmpty)
+        tvPrivacyNote = TextView(this).apply {
+            text = getString(R.string.on_create_3)
+            setTextColor(colorTextSecondary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER
+                topMargin = dp(64)
+            }
+            addPressAnimation()
+            setOnClickListener { showPrivacyInfoDialog() }
+        }
+        canvasFrame.addView(tvPrivacyNote)
         root.addView(canvasFrame)
 
         // 4. 하단 세그먼트 도구 바
@@ -321,6 +351,7 @@ class MainActivity : ComponentActivity() {
         root.addView(createAdContainer())
 
         setContentView(root)
+        requestAdConsent()
 
         if (savedInstanceState == null) {
             // 새로 시작: 이전 실행의 임시 파일 정리 후 공유로 들어온 이미지 처리
@@ -399,13 +430,13 @@ class MainActivity : ComponentActivity() {
     private fun showIncomingShareDialog(uris: List<Uri>) {
         val single = uris.size == 1
         val options = mutableListOf(
-            "⚡ 정보 지우고 바로 공유 (화질 그대로)",
-            "💾 정보 지우고 갤러리에 저장"
+            getString(R.string.show_incoming_share_dialog_1),
+            getString(R.string.show_incoming_share_dialog_2)
         )
-        if (single) options.add("✏️ 얼굴·글자 가리기 (편집)")
+        if (single) options.add(getString(R.string.show_incoming_share_dialog_3))
 
         dialogBuilder()
-            .setTitle(if (single) "공유받은 사진" else "공유받은 사진 ${uris.size}장")
+            .setTitle(if (single) getString(R.string.show_incoming_share_dialog_4) else getString(R.string.show_incoming_share_dialog_5, uris.size))
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> runBatchClean(uris, shareAfter = true)
@@ -413,7 +444,7 @@ class MainActivity : ComponentActivity() {
                     2 -> loadBitmapSafely(uris[0])
                 }
             }
-            .setNegativeButton("취소", null)
+            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
             .show()
     }
 
@@ -436,7 +467,7 @@ class MainActivity : ComponentActivity() {
             }
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(intent, "정보를 지운 사진 공유"))
+        startActivity(Intent.createChooser(intent, getString(R.string.share_images_1)))
     }
 
     private fun initThemeColors() {
@@ -475,7 +506,7 @@ class MainActivity : ComponentActivity() {
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56))
             setPadding(dp(12), 0, dp(12), 0)
             setBackgroundColor(colorBar)
         }
@@ -487,7 +518,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val tvAppTitle = TextView(this).apply {
-            text = "사진정보 지우개"
+            text = getString(R.string.create_top_header_bar_1)
             setTextColor(colorTextPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f)
             typeface = Typeface.DEFAULT_BOLD
@@ -520,33 +551,33 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val btnExifInfo = createHeaderActionButton("ℹ️ 정보") {
+        val btnExifInfo = createHeaderActionButton(getString(R.string.create_top_header_bar_2)) {
             if (mosaicView.getBaseBitmap() == null) {
-                Toast.makeText(this, "먼저 사진을 불러와주세요.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.create_top_header_bar_3), Toast.LENGTH_SHORT).show()
             } else {
                 showExifDetailsDialog()
             }
         }
         actionsContainer.addView(btnExifInfo)
 
-        btnUndo = createHeaderActionButton("취소") {
+        btnUndo = createHeaderActionButton(getString(R.string.show_incoming_share_dialog_6)) {
             val undone = mosaicView.undo()
             if (!undone) {
-                Toast.makeText(this, "되돌릴 작업이 없습니다.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.create_top_header_bar_4), Toast.LENGTH_SHORT).show()
             }
         }
         actionsContainer.addView(btnUndo)
 
-        btnRedo = createHeaderActionButton("복원") {
+        btnRedo = createHeaderActionButton(getString(R.string.create_top_header_bar_5)) {
             val redone = mosaicView.redo()
             if (!redone) {
-                Toast.makeText(this, "다시 실행할 작업이 없습니다.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.create_top_header_bar_6), Toast.LENGTH_SHORT).show()
             }
         }
         actionsContainer.addView(btnRedo)
 
         val btnSave = TextView(this).apply {
-            text = "저장"
+            text = getString(R.string.create_top_header_bar_7)
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.DEFAULT_BOLD
@@ -557,7 +588,7 @@ class MainActivity : ComponentActivity() {
                 cornerRadius = dp(14).toFloat()
             }
             background = RippleDrawable(ColorStateList.valueOf(Color.parseColor("#44FFFFFF")), shape, null)
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(32)).apply {
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
                 marginStart = dp(6)
             }
             layoutParams = lp
@@ -573,7 +604,7 @@ class MainActivity : ComponentActivity() {
     // 2층 도구 스크롤 바
     private fun createSubToolBar(): View {
         val scroll = HorizontalScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(42))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52))
             isHorizontalScrollBarEnabled = false
             setBackgroundColor(colorBar)
             setPadding(dp(8), dp(3), dp(8), dp(5))
@@ -584,29 +615,29 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val btnPick = createPillToolButton("📂 사진 열기") {
+        val btnPick = createPillToolButton(getString(R.string.create_sub_tool_bar_1)) {
             showPhotoSourceDialog()
         }
-        val btnAutoText = createPillToolButton("🔎 개인정보 자동감지") {
+        val btnAutoText = createPillToolButton(getString(R.string.create_sub_tool_bar_2)) {
             detectSensitiveInfo()
         }
-        val btnAutoFace = createPillToolButton("👤 얼굴 자동가림") {
+        val btnAutoFace = createPillToolButton(getString(R.string.create_sub_tool_bar_3)) {
             detectFacesAndMosaic()
         }
-        val btnFastClean = createPillToolButton("⚡ 빠른 메타삭제") {
+        val btnFastClean = createPillToolButton(getString(R.string.create_sub_tool_bar_4)) {
             quickCleanAndSave()
         }
-        val btnBatch = createPillToolButton("🗂️ 여러 장 메타삭제") {
+        val btnBatch = createPillToolButton(getString(R.string.create_sub_tool_bar_5)) {
             startBatchClean()
         }
-        val btnResetZoom = createPillToolButton("⟲ 줌 리셋") {
+        val btnResetZoom = createPillToolButton(getString(R.string.create_sub_tool_bar_6)) {
             mosaicView.resetZoom()
-            Toast.makeText(this, "화면 배율이 100%로 리셋되었습니다.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.create_sub_tool_bar_7), Toast.LENGTH_SHORT).show()
         }
-        val btnClearAll = createPillToolButton("🗑️ 전체초기화") {
+        val btnClearAll = createPillToolButton(getString(R.string.create_sub_tool_bar_8)) {
             confirmClearAll()
         }
-        val btnFolder = createPillToolButton("📁 저장위치") {
+        val btnFolder = createPillToolButton(getString(R.string.create_sub_tool_bar_9)) {
             showFolderSettingDialog()
         }
 
@@ -618,6 +649,7 @@ class MainActivity : ComponentActivity() {
         container.addView(btnResetZoom)
         container.addView(btnClearAll)
         container.addView(btnFolder)
+        container.addView(createPillToolButton(getString(R.string.create_sub_tool_bar_10)) { showPrivacyInfoDialog() })
 
         scroll.addView(container)
         return scroll
@@ -656,7 +688,7 @@ class MainActivity : ComponentActivity() {
         banner.addView(tvBannerText)
 
         val tvBannerAction = TextView(this).apply {
-            text = "상세보기 >"
+            text = getString(R.string.create_exif_warning_banner_1)
             setTextColor(colorWarningText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             typeface = Typeface.DEFAULT_BOLD
@@ -670,7 +702,7 @@ class MainActivity : ComponentActivity() {
     private fun createBottomToolBar(): View {
         val bottomBar = LinearLayout(this).apply {
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60))
             setBackgroundColor(colorBar)
             setPadding(dp(8), 0, dp(8), 0)
         }
@@ -684,22 +716,22 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(3), dp(3), dp(3), dp(3))
         }
 
-        btnMosaic = createSegmentItem("모자이크", isSelected = true) {
+        btnMosaic = createSegmentItem(getString(R.string.create_bottom_tool_bar_1), isSelected = true) {
             mosaicView.mode = MosaicView.Mode.MOSAIC
             updateSegment(MosaicView.Mode.MOSAIC)
-            Toast.makeText(this, "모자이크 브러시 모드", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.create_bottom_tool_bar_2), Toast.LENGTH_SHORT).show()
         }
 
-        btnBlackBox = createSegmentItem("블랙바", isSelected = false) {
+        btnBlackBox = createSegmentItem(getString(R.string.create_bottom_tool_bar_3), isSelected = false) {
             mosaicView.mode = MosaicView.Mode.BLACK_BOX
             updateSegment(MosaicView.Mode.BLACK_BOX)
-            Toast.makeText(this, "블랙박스 영역 가림 모드", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.create_bottom_tool_bar_4), Toast.LENGTH_SHORT).show()
         }
 
-        btnWhiteBox = createSegmentItem("화이트바", isSelected = false) {
+        btnWhiteBox = createSegmentItem(getString(R.string.create_bottom_tool_bar_5), isSelected = false) {
             mosaicView.mode = MosaicView.Mode.WHITE_BOX
             updateSegment(MosaicView.Mode.WHITE_BOX)
-            Toast.makeText(this, "화이트박스 영역 가림 모드", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.create_bottom_tool_bar_6), Toast.LENGTH_SHORT).show()
         }
 
         segmentContainer.addView(btnMosaic)
@@ -708,7 +740,8 @@ class MainActivity : ComponentActivity() {
         bottomBar.addView(segmentContainer)
 
         btnBrushSize = TextView(this).apply {
-            text = "● 굵기: ${currentBrushLevel.label}"
+            text = getString(R.string.create_bottom_tool_bar_7, getString(currentBrushLevel.labelRes))
+            contentDescription = getString(R.string.create_bottom_tool_bar_8, getString(currentBrushLevel.labelRes))
             setTextColor(colorTextPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.DEFAULT_BOLD
@@ -719,7 +752,7 @@ class MainActivity : ComponentActivity() {
             }
             background = RippleDrawable(ColorStateList.valueOf(colorRipple), shape, null)
             setPadding(dp(10), dp(6), dp(10), dp(6))
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(32)).apply {
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
                 marginStart = dp(10)
             }
             layoutParams = lp
@@ -745,7 +778,7 @@ class MainActivity : ComponentActivity() {
         }
 
         adView = AdView(this).apply {
-            adUnitId = "ca-app-pub-3940256099942544/6300978111"
+            adUnitId = BuildConfig.ADMOB_BANNER_ID
             setAdSize(adaptiveSize)
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -754,13 +787,75 @@ class MainActivity : ComponentActivity() {
             )
         }
         adContainer.addView(adView)
-        adView.loadAd(AdRequest.Builder().build())
+        // 광고 요청은 개인정보 동의 확인(UMP) 이후 initializeAdsIfAllowed()에서 시작
         return adContainer
+    }
+
+    /**
+     * 광고 개인정보 동의 확인 (Google UMP)
+     * - 동의가 필요한 지역(유럽 등) 사용자에게만 동의 창이 표시됨
+     * - 동의 결과에 따라 광고를 요청할 수 있을 때만 광고 SDK 초기화
+     */
+    private fun requestAdConsent() {
+        val consentInfo = UserMessagingPlatform.getConsentInformation(this)
+        consentInformation = consentInfo
+        consentInfo.requestConsentInfoUpdate(
+            this,
+            ConsentRequestParameters.Builder().build(),
+            {
+                UserMessagingPlatform.loadAndShowConsentFormIfRequired(this) { _ ->
+                    initializeAdsIfAllowed()
+                }
+            },
+            { _ -> initializeAdsIfAllowed() }
+        )
+        // 이전 실행에서 이미 동의했다면 확인 결과를 기다리지 않고 바로 시작
+        initializeAdsIfAllowed()
+    }
+
+    private fun initializeAdsIfAllowed() {
+        if (consentInformation?.canRequestAds() != true) return
+        if (adsInitialized.getAndSet(true)) return
+        thread {
+            MobileAds.initialize(this) {}
+            runOnUiThread {
+                if (!isDestroyed) adView.loadAd(AdRequest.Builder().build())
+            }
+        }
+    }
+
+    /** 사진이 기기 밖으로 나가지 않는다는 안내 + 개인정보처리방침 + (필요 지역) 광고 동의 변경 */
+    private fun showPrivacyInfoDialog() {
+        val adOptionsRequired = consentInformation?.privacyOptionsRequirementStatus ==
+                ConsentInformation.PrivacyOptionsRequirementStatus.REQUIRED
+
+        val builder = dialogBuilder()
+            .setTitle(getString(R.string.show_privacy_info_dialog_1))
+            .setMessage(
+                getString(R.string.show_privacy_info_dialog_2) +
+                        getString(R.string.show_privacy_info_dialog_3) +
+                        getString(R.string.show_privacy_info_dialog_4)
+            )
+            .setPositiveButton(getString(R.string.show_privacy_info_dialog_5), null)
+            .setNeutralButton(getString(R.string.show_privacy_info_dialog_6)) { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL)))
+                } catch (_: Exception) {
+                    Toast.makeText(this, getString(R.string.show_privacy_info_dialog_7), Toast.LENGTH_SHORT).show()
+                }
+            }
+        if (adOptionsRequired) {
+            builder.setNegativeButton(getString(R.string.show_privacy_info_dialog_8)) { _, _ ->
+                UserMessagingPlatform.showPrivacyOptionsForm(this) { _ -> }
+            }
+        }
+        builder.show()
     }
 
     private fun createHeaderActionButton(text: String, onClick: () -> Unit): TextView {
         return TextView(this).apply {
             this.text = text
+            contentDescription = accessibleLabel(text)
             setTextColor(colorTextPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             typeface = Typeface.DEFAULT_BOLD
@@ -771,7 +866,7 @@ class MainActivity : ComponentActivity() {
                 cornerRadius = dp(12).toFloat()
             }
             background = RippleDrawable(ColorStateList.valueOf(colorRipple), shape, null)
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(28)).apply {
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
                 marginEnd = dp(4)
             }
             layoutParams = lp
@@ -785,6 +880,7 @@ class MainActivity : ComponentActivity() {
     private fun createPillToolButton(text: String, onClick: () -> Unit): TextView {
         return TextView(this).apply {
             this.text = text
+            contentDescription = accessibleLabel(text)
             setTextColor(colorTextPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.DEFAULT_BOLD
@@ -795,7 +891,7 @@ class MainActivity : ComponentActivity() {
                 cornerRadius = dp(12).toFloat()
             }
             background = RippleDrawable(ColorStateList.valueOf(colorRipple), shape, null)
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(28)).apply {
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
                 marginEnd = dp(6)
             }
             layoutParams = lp
@@ -810,7 +906,7 @@ class MainActivity : ComponentActivity() {
             this.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             this.typeface = Typeface.DEFAULT_BOLD
             this.gravity = Gravity.CENTER
-            val lp = LinearLayout.LayoutParams(dp(68), dp(30))
+            val lp = LinearLayout.LayoutParams(dp(72), dp(40))
             this.layoutParams = lp
             addPressAnimation()
             this.setOnClickListener { onClick() }
@@ -861,12 +957,19 @@ class MainActivity : ComponentActivity() {
             BrushLevel.MEDIUM -> BrushLevel.LARGE
             BrushLevel.LARGE -> BrushLevel.SMALL
         }
-        btnBrushSize.text = "● 굵기: ${currentBrushLevel.label}"
+        btnBrushSize.text = getString(R.string.create_bottom_tool_bar_7, getString(currentBrushLevel.labelRes))
+        btnBrushSize.contentDescription = getString(R.string.create_bottom_tool_bar_8, getString(currentBrushLevel.labelRes))
         mosaicView.brushScaleMultiplier = currentBrushLevel.scale
         // 현재 확대 배율 기준 실제 브러시 크기를 화면 중앙에 잠깐 표시
         mosaicView.showBrushIndicator()
     }
 
+    // 화면 낭독기(TalkBack)용 이름: "📂 사진 열기" → "사진 열기"
+    private fun accessibleLabel(text: String): String =
+        text.trimStart { !it.isLetterOrDigit() }.trim().ifEmpty { text }
+
+    // 터치 리스너는 눌림 효과만 주고 false를 반환하므로 클릭·접근성 동작은 OnClickListener가 그대로 처리
+    @SuppressLint("ClickableViewAccessibility")
     private fun View.addPressAnimation() {
         setOnTouchListener { v, event ->
             when (event.action) {
@@ -887,11 +990,11 @@ class MainActivity : ComponentActivity() {
 
     private fun showPhotoSourceDialog() {
         val options = arrayOf(
-            "🖼️ 갤러리 사진 선택기 (간편 선택)",
-            "📁 원본 파일 선택 (GPS 및 모든 메타데이터 보존 분석)"
+            getString(R.string.show_photo_source_dialog_1),
+            getString(R.string.show_photo_source_dialog_2)
         )
         dialogBuilder()
-            .setTitle("사진 불러오기 방식 선택")
+            .setTitle(getString(R.string.show_photo_source_dialog_3))
             .setItems(options) { _, which ->
                 if (which == 0) {
                     pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -900,7 +1003,7 @@ class MainActivity : ComponentActivity() {
                     withMediaPermission { pickDocument.launch(arrayOf("image/*")) }
                 }
             }
-            .setNegativeButton("취소", null)
+            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
             .show()
     }
 
@@ -918,7 +1021,7 @@ class MainActivity : ComponentActivity() {
         }
         val mime = currentMimeType
 
-        Toast.makeText(this, if (isRestore) "이전 작업을 복원하는 중..." else "사진 및 메타데이터 정밀 분석 중...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, if (isRestore) getString(R.string.load_bitmap_safely_1) else getString(R.string.load_bitmap_safely_2), Toast.LENGTH_SHORT).show()
         thread {
             try {
                 // 원본 파일을 앱 내부 캐시에 그대로 복사해 두고 이후 작업은 복사본으로 진행
@@ -928,7 +1031,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     val bytes = PhotoIo.readBytes(this, PhotoIo.resolveOriginal(uri))
                         ?: PhotoIo.readBytes(this, uri)
-                        ?: throw IllegalStateException("사진을 읽을 수 없습니다.")
+                        ?: throw IllegalStateException(getString(R.string.load_bitmap_safely_3))
                     sourceCacheFile.writeBytes(bytes)
                     Uri.fromFile(sourceCacheFile)
                 }
@@ -982,14 +1085,14 @@ class MainActivity : ComponentActivity() {
                     if (focalLength != null) tagCount++
 
                     val orientationDesc = when (orientationInt) {
-                        ExifInterface.ORIENTATION_ROTATE_90 -> "90° 회전"
-                        ExifInterface.ORIENTATION_ROTATE_180 -> "180° 회전"
-                        ExifInterface.ORIENTATION_ROTATE_270 -> "270° 회전"
-                        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> "좌우 반전"
-                        ExifInterface.ORIENTATION_FLIP_VERTICAL -> "상하 반전"
-                        ExifInterface.ORIENTATION_TRANSPOSE -> "90° 회전 + 좌우 반전"
-                        ExifInterface.ORIENTATION_TRANSVERSE -> "270° 회전 + 좌우 반전"
-                        else -> "정방향 (0°)"
+                        ExifInterface.ORIENTATION_ROTATE_90 -> getString(R.string.load_bitmap_safely_4)
+                        ExifInterface.ORIENTATION_ROTATE_180 -> getString(R.string.load_bitmap_safely_5)
+                        ExifInterface.ORIENTATION_ROTATE_270 -> getString(R.string.load_bitmap_safely_6)
+                        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> getString(R.string.load_bitmap_safely_7)
+                        ExifInterface.ORIENTATION_FLIP_VERTICAL -> getString(R.string.load_bitmap_safely_8)
+                        ExifInterface.ORIENTATION_TRANSPOSE -> getString(R.string.load_bitmap_safely_9)
+                        ExifInterface.ORIENTATION_TRANSVERSE -> getString(R.string.load_bitmap_safely_10)
+                        else -> getString(R.string.load_bitmap_safely_11)
                     }
 
                     metadata = PhotoMetadata(
@@ -1029,14 +1132,17 @@ class MainActivity : ComponentActivity() {
 
                 runOnUiThread {
                     btnPickEmpty.visibility = View.GONE
+                    tvPrivacyNote.visibility = View.GONE
                     mosaicView.setImage(finalBmp)
                     restoreHistory?.let { mosaicView.restoreHistory(it) }
                     updateExifUi(currentMetadata)
                     updateUndoRedoButtons()
                 }
+            } catch (_: OutOfMemoryError) {
+                runOnUiThread { showOutOfMemoryMessage() }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this, "사진 로드 실패: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, getString(R.string.load_bitmap_safely_12, e.localizedMessage), Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -1053,7 +1159,7 @@ class MainActivity : ComponentActivity() {
         tvExifBadge.visibility = View.VISIBLE
 
         if (meta.isAlreadyClean) {
-            tvExifBadge.text = "✅ 메타데이터 제거됨"
+            tvExifBadge.text = getString(R.string.update_exif_ui_1)
             tvExifBadge.setTextColor(Color.WHITE)
             tvExifBadge.background = GradientDrawable().apply {
                 setColor(Color.parseColor("#10B981"))
@@ -1062,7 +1168,7 @@ class MainActivity : ComponentActivity() {
             bannerExifWarning.visibility = View.GONE
         } else if (meta.hasGps) {
             // 위치 정보 포함: 최고 경고 단계
-            tvExifBadge.text = "⚠️ GPS 위치 노출!"
+            tvExifBadge.text = getString(R.string.update_exif_ui_2)
             tvExifBadge.setTextColor(Color.WHITE)
             tvExifBadge.background = GradientDrawable().apply {
                 setColor(Color.parseColor("#EF4444"))
@@ -1070,10 +1176,10 @@ class MainActivity : ComponentActivity() {
             }
 
             bannerExifWarning.visibility = View.VISIBLE
-            tvBannerText.text = "🚨 사진에 정밀 GPS 위치정보가 포함되어 있습니다! 집/직장 위치 유출 위험"
+            tvBannerText.text = getString(R.string.update_exif_ui_3)
         } else if (meta.totalTagsCount > 0) {
             // 촬영 기기/시간 정보 포함
-            tvExifBadge.text = "ℹ️ ${meta.totalTagsCount}개 메타정보"
+            tvExifBadge.text = getString(R.string.update_exif_ui_4, meta.totalTagsCount)
             tvExifBadge.setTextColor(colorTextPrimary)
             tvExifBadge.background = GradientDrawable().apply {
                 setColor(colorSegmentBg)
@@ -1083,7 +1189,7 @@ class MainActivity : ComponentActivity() {
             bannerExifWarning.visibility = View.GONE
         } else {
             // 메타데이터 없음 (안전)
-            tvExifBadge.text = "🛡️ 안전 (메타 없음)"
+            tvExifBadge.text = getString(R.string.update_exif_ui_5)
             tvExifBadge.setTextColor(Color.parseColor("#10B981"))
             tvExifBadge.background = GradientDrawable().apply {
                 setColor(if (isNightMode) Color.parseColor("#064E3B") else Color.parseColor("#ECFDF5"))
@@ -1097,7 +1203,7 @@ class MainActivity : ComponentActivity() {
     private fun showExifDetailsDialog() {
         val meta = currentMetadata
         if (meta == null) {
-            Toast.makeText(this, "분석된 메타데이터가 없습니다.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.show_exif_details_dialog_1), Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -1140,28 +1246,28 @@ class MainActivity : ComponentActivity() {
         }
 
         // 1. 위치 정보
-        addSectionHeader("📍 GPS 위치 정보")
+        addSectionHeader(getString(R.string.show_exif_details_dialog_2))
         if (meta.hasGps && meta.latitude != null && meta.longitude != null) {
-            addItem("위도 및 경도 (정밀 좌표)", "%.6f, %.6f (집/현재 위치 노출 위험!)".format(meta.latitude, meta.longitude), isWarning = true)
-            meta.altitude?.let { addItem("해발 고도", "%.1f m".format(it)) }
-            meta.gpsTimeStamp?.let { addItem("GPS 수신 시각", it) }
+            addItem(getString(R.string.show_exif_details_dialog_3), getString(R.string.show_exif_details_dialog_4).format(meta.latitude, meta.longitude), isWarning = true)
+            meta.altitude?.let { addItem(getString(R.string.show_exif_details_dialog_5), "%.1f m".format(it)) }
+            meta.gpsTimeStamp?.let { addItem(getString(R.string.show_exif_details_dialog_6), it) }
         } else {
-            addItem("GPS 위치 정보", "포함되어 있지 않음 (안전)")
+            addItem(getString(R.string.show_exif_details_dialog_7), getString(R.string.show_exif_details_dialog_8))
         }
 
         // 2. 기기 및 카메라
-        addSectionHeader("📱 기기 및 촬영 장비")
-        val device = listOfNotNull(meta.cameraMake, meta.cameraModel).joinToString(" ").ifEmpty { "기기 정보 없음" }
-        addItem("스마트폰 / 카메라 모델", device)
-        meta.lensModel?.let { addItem("렌즈 모델", it) }
+        addSectionHeader(getString(R.string.show_exif_details_dialog_9))
+        val device = listOfNotNull(meta.cameraMake, meta.cameraModel).joinToString(" ").ifEmpty { getString(R.string.show_exif_details_dialog_10) }
+        addItem(getString(R.string.show_exif_details_dialog_11), device)
+        meta.lensModel?.let { addItem(getString(R.string.show_exif_details_dialog_12), it) }
 
         // 3. 일시 및 소프트웨어
-        addSectionHeader("🕒 일시 및 소프트웨어")
-        addItem("촬영 일시", meta.dateTime ?: "기록 없음")
-        meta.software?.let { addItem("사용 소프트웨어 / 편집 툴", it) }
-        meta.artist?.let { addItem("작성자 / 아티스트", it, isWarning = true) }
-        meta.copyright?.let { addItem("저작권 정보", it) }
-        meta.userComment?.let { addItem("사용자 메모(User Comment)", it) }
+        addSectionHeader(getString(R.string.show_exif_details_dialog_13))
+        addItem(getString(R.string.show_exif_details_dialog_14), meta.dateTime ?: getString(R.string.show_exif_details_dialog_15))
+        meta.software?.let { addItem(getString(R.string.show_exif_details_dialog_16), it) }
+        meta.artist?.let { addItem(getString(R.string.show_exif_details_dialog_17), it, isWarning = true) }
+        meta.copyright?.let { addItem(getString(R.string.show_exif_details_dialog_18), it) }
+        meta.userComment?.let { addItem(getString(R.string.show_exif_details_dialog_19), it) }
 
         // 4. 촬영 파라미터
         val cameraParams = listOfNotNull(
@@ -1171,18 +1277,18 @@ class MainActivity : ComponentActivity() {
             meta.focalLength
         ).joinToString(" · ")
         if (cameraParams.isNotEmpty()) {
-            addSectionHeader("⚙️ 카메라 촬영 설정값")
-            addItem("촬영 상세값", cameraParams)
+            addSectionHeader(getString(R.string.show_exif_details_dialog_20))
+            addItem(getString(R.string.show_exif_details_dialog_21), cameraParams)
         }
 
         // 5. 이미지 규격
-        addSectionHeader("📐 이미지 규격")
-        addItem("해상도", "${meta.width} × ${meta.height} px")
-        meta.orientationDesc?.let { addItem("방향(회전)", it) }
-        meta.mimeType?.let { addItem("파일 포맷", it) }
+        addSectionHeader(getString(R.string.show_exif_details_dialog_22))
+        addItem(getString(R.string.show_exif_details_dialog_23), "${meta.width} × ${meta.height} px")
+        meta.orientationDesc?.let { addItem(getString(R.string.show_exif_details_dialog_24), it) }
+        meta.mimeType?.let { addItem(getString(R.string.show_exif_details_dialog_25), it) }
 
         val tvNotice = TextView(this).apply {
-            text = "\n🛡️ [사진정보 지우개 보호 안내]\n앱에서 저장한 새 사진에는 위의 위치, 기기 정보, 촬영 일시 메타데이터(EXIF)가 포함되지 않습니다. (원본 파일은 그대로 유지)"
+            text = getString(R.string.show_exif_details_dialog_26)
             setTextColor(colorTextSecondary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setLineSpacing(0f, 1.25f)
@@ -1191,10 +1297,10 @@ class MainActivity : ComponentActivity() {
         scroll.addView(layout)
 
         dialogBuilder()
-            .setTitle("사진 메타데이터 정밀 분석")
+            .setTitle(getString(R.string.show_exif_details_dialog_27))
             .setView(scroll)
-            .setPositiveButton("확인", null)
-            .setNeutralButton("⚡ 메타데이터만 즉시 삭제") { _, _ ->
+            .setPositiveButton(getString(R.string.show_privacy_info_dialog_5), null)
+            .setNeutralButton(getString(R.string.show_exif_details_dialog_28)) { _, _ ->
                 quickCleanAndSave()
             }
             .show()
@@ -1204,7 +1310,7 @@ class MainActivity : ComponentActivity() {
     private fun quickCleanAndSave() {
         val originalBmp = mosaicView.getBaseBitmap()
         if (originalBmp == null) {
-            Toast.makeText(this, "먼저 사진을 불러와주세요.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.create_top_header_bar_3), Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -1214,7 +1320,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        Toast.makeText(this, "메타데이터 완전 삭제 처리 중...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.quick_clean_and_save_1), Toast.LENGTH_SHORT).show()
         val sourceUri = currentImageUri
         thread {
             // 1순위: 원본 파일에서 메타데이터만 잘라내기 (재압축 없음 → 화질·해상도 그대로)
@@ -1240,11 +1346,11 @@ class MainActivity : ComponentActivity() {
     // AI 얼굴인식 및 자동 모자이크
     private fun detectFacesAndMosaic() {
         val originalBmp = mosaicView.getBaseBitmap() ?: run {
-            Toast.makeText(this, "먼저 사진을 불러와주세요.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.create_top_header_bar_3), Toast.LENGTH_SHORT).show()
             return
         }
 
-        Toast.makeText(this, "얼굴을 감지하는 중입니다...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.detect_faces_and_mosaic_1), Toast.LENGTH_SHORT).show()
 
         thread {
             try {
@@ -1280,7 +1386,7 @@ class MainActivity : ComponentActivity() {
                             return@addOnSuccessListener
                         }
                         if (faces.isEmpty()) {
-                            Toast.makeText(this, "감지된 얼굴이 없습니다.", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this, getString(R.string.detect_faces_and_mosaic_2), Toast.LENGTH_SHORT).show()
                             return@addOnSuccessListener
                         }
 
@@ -1304,10 +1410,10 @@ class MainActivity : ComponentActivity() {
                         }
 
                         mosaicView.addFaceMosaics(expandedFaceRects)
-                        Toast.makeText(this, "${faces.size}개의 얼굴에 모자이크를 적용했습니다.", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, getString(R.string.detect_faces_and_mosaic_3, faces.size), Toast.LENGTH_SHORT).show()
                     }
                     .addOnFailureListener { e ->
-                        Toast.makeText(this, "얼굴 인식 실패: ${PrivacyScanner.friendlyError(e)}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, getString(R.string.detect_faces_and_mosaic_4, PrivacyScanner.friendlyError(this, e)), Toast.LENGTH_SHORT).show()
                     }
                     .addOnCompleteListener {
                         detector.close()
@@ -1315,9 +1421,11 @@ class MainActivity : ComponentActivity() {
                             analysisBmp.recycle()
                         }
                     }
+            } catch (_: OutOfMemoryError) {
+                runOnUiThread { showOutOfMemoryMessage() }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this, "분석 중 오류 발생: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, getString(R.string.detect_faces_and_mosaic_5, e.localizedMessage), Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -1333,11 +1441,11 @@ class MainActivity : ComponentActivity() {
     // 글자(OCR)·바코드에서 개인정보 자동 감지 → 사용자 확인 후 블랙바로 가림
     private fun detectSensitiveInfo() {
         val bmp = mosaicView.getBaseBitmap() ?: run {
-            Toast.makeText(this, "먼저 사진을 불러와주세요.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.create_top_header_bar_3), Toast.LENGTH_SHORT).show()
             return
         }
 
-        Toast.makeText(this, "글자와 바코드에서 개인정보를 찾는 중...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.detect_sensitive_info_1), Toast.LENGTH_SHORT).show()
         thread {
             try {
                 val findings = PrivacyScanner.scan(bmp)
@@ -1347,19 +1455,32 @@ class MainActivity : ComponentActivity() {
                     if (findings.isEmpty()) {
                         Toast.makeText(
                             this,
-                            "자동으로 찾은 개인정보가 없습니다. 놓친 부분이 없는지 직접 확인해주세요.",
+                            getString(R.string.detect_sensitive_info_2),
                             Toast.LENGTH_LONG
                         ).show()
                     } else {
                         showSensitiveReviewDialog(findings)
                     }
                 }
+            } catch (_: OutOfMemoryError) {
+                runOnUiThread { showOutOfMemoryMessage() }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this, "개인정보 감지 실패: ${PrivacyScanner.friendlyError(e)}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, getString(R.string.detect_sensitive_info_3, PrivacyScanner.friendlyError(this, e)), Toast.LENGTH_SHORT).show()
                 }
             }
         }
+    }
+
+    private fun categoryLabelRes(category: SensitiveTextMatcher.Category): Int = when (category) {
+        SensitiveTextMatcher.Category.RRN -> R.string.category_rrn
+        SensitiveTextMatcher.Category.PHONE -> R.string.category_phone
+        SensitiveTextMatcher.Category.EMAIL -> R.string.category_email
+        SensitiveTextMatcher.Category.ACCOUNT -> R.string.category_account
+        SensitiveTextMatcher.Category.LONG_NUMBER -> R.string.category_long_number
+        SensitiveTextMatcher.Category.ADDRESS -> R.string.category_address
+        SensitiveTextMatcher.Category.LABELED_LINE -> R.string.category_labeled_line
+        SensitiveTextMatcher.Category.BARCODE -> R.string.category_barcode
     }
 
     private fun showSensitiveReviewDialog(findings: List<PrivacyScanner.Finding>) {
@@ -1376,7 +1497,7 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(20), dp(8), dp(20), dp(4))
         }
         layout.addView(TextView(this).apply {
-            text = "빨간 점선으로 표시된 곳을 블랙바로 가립니다.\n자동 감지는 일부를 놓칠 수 있으니, 가린 뒤 사진 전체를 직접 확인해주세요."
+            text = getString(R.string.show_sensitive_review_dialog_1)
             setTextColor(colorTextSecondary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             setLineSpacing(0f, 1.2f)
@@ -1384,7 +1505,7 @@ class MainActivity : ComponentActivity() {
         })
         for (cat in categories) {
             layout.addView(CheckBox(this).apply {
-                text = "${cat.label} (${grouped.getValue(cat).size}곳)"
+                text = getString(R.string.show_sensitive_review_dialog_2, getString(categoryLabelRes(cat)), grouped.getValue(cat).size)
                 isChecked = true
                 setTextColor(colorTextPrimary)
                 setOnCheckedChangeListener { _, isOn ->
@@ -1396,17 +1517,17 @@ class MainActivity : ComponentActivity() {
 
         mosaicView.setPreview(selectedRects())
         dialogBuilder()
-            .setTitle("개인정보 ${findings.size}곳 감지")
+            .setTitle(getString(R.string.show_sensitive_review_dialog_3, findings.size))
             .setView(ScrollView(this).apply { addView(layout) })
-            .setPositiveButton("선택 항목 가리기") { _, _ ->
+            .setPositiveButton(getString(R.string.show_sensitive_review_dialog_4)) { _, _ ->
                 val rects = selectedRects()
                 mosaicView.clearPreview()
                 mosaicView.addBoxes(rects)
                 if (rects.isNotEmpty()) {
-                    Toast.makeText(this, "${rects.size}곳을 가렸습니다. 놓친 부분이 없는지 확인해주세요.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, getString(R.string.show_sensitive_review_dialog_5, rects.size), Toast.LENGTH_LONG).show()
                 }
             }
-            .setNegativeButton("취소", null)
+            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
             .setOnDismissListener { mosaicView.clearPreview() }
             .show()
     }
@@ -1436,7 +1557,7 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(12), dp(20), dp(4))
             addView(TextView(this@MainActivity).apply {
-                text = "위치·기기·촬영일시 정보만 지웁니다. 얼굴이나 글자는 가려지지 않습니다."
+                text = getString(R.string.run_batch_clean_1)
                 setTextColor(colorTextSecondary)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
                 setPadding(0, 0, 0, dp(10))
@@ -1445,10 +1566,10 @@ class MainActivity : ComponentActivity() {
             addView(tvProgress)
         }
         val progressDialog = dialogBuilder()
-            .setTitle(if (shareAfter) "공유할 사진의 정보 지우는 중" else "여러 장 메타데이터 제거 중")
+            .setTitle(if (shareAfter) getString(R.string.run_batch_clean_2) else getString(R.string.run_batch_clean_3))
             .setView(layout)
             .setCancelable(false)
-            .setNegativeButton("중지") { _, _ -> cancelled.set(true) }
+            .setNegativeButton(getString(R.string.run_batch_clean_4)) { _, _ -> cancelled.set(true) }
             .show()
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1508,25 +1629,25 @@ class MainActivity : ComponentActivity() {
                 if (progressDialog.isShowing) progressDialog.dismiss()
                 if (shareAfter) {
                     if (failed > 0) {
-                        Toast.makeText(this, "${failed}장은 처리하지 못해 공유에서 빠졌습니다.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, getString(R.string.run_batch_clean_5, failed), Toast.LENGTH_LONG).show()
                     }
                     if (outputs.isNotEmpty() && !cancelled.get()) shareImages(outputs)
                     return@runOnUiThread
                 }
                 val done = lossless + reencoded
-                val location = if (safUri != null) "지정한 폴더" else "Pictures/$folderName"
+                val location = if (safUri != null) getString(R.string.run_batch_clean_6) else "Pictures/$folderName"
                 val summary = buildString {
-                    append("${done}장의 메타데이터를 지워 새로 저장했습니다.\n")
-                    append("• 화질 그대로(무손실): ${lossless}장\n")
-                    if (reencoded > 0) append("• 다시 인코딩(HEIC 등): ${reencoded}장\n")
-                    if (failed > 0) append("• 실패: ${failed}장\n")
-                    if (cancelled.get()) append("• 중지됨: ${uris.size - done - failed}장 처리 안 함\n")
-                    append("\n저장 위치: $location\n원본 사진은 그대로 남아 있습니다.")
+                    append(getString(R.string.run_batch_clean_7, done))
+                    append(getString(R.string.run_batch_clean_8, lossless))
+                    if (reencoded > 0) append(getString(R.string.run_batch_clean_9, reencoded))
+                    if (failed > 0) append(getString(R.string.run_batch_clean_10, failed))
+                    if (cancelled.get()) append(getString(R.string.run_batch_clean_11, uris.size - done - failed))
+                    append(getString(R.string.run_batch_clean_12, location))
                 }
                 dialogBuilder()
-                    .setTitle("일괄 처리 완료")
+                    .setTitle(getString(R.string.run_batch_clean_13))
                     .setMessage(summary)
-                    .setPositiveButton("확인", null)
+                    .setPositiveButton(getString(R.string.show_privacy_info_dialog_5), null)
                     .show()
             }
         }
@@ -1534,18 +1655,18 @@ class MainActivity : ComponentActivity() {
 
     private fun confirmClearAll() {
         if (!mosaicView.hasActions()) {
-            Toast.makeText(this, "가려진 편집 내용이 없습니다.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.confirm_clear_all_1), Toast.LENGTH_SHORT).show()
             return
         }
 
         dialogBuilder()
-            .setTitle("편집 초기화")
-            .setMessage("작업한 모든 모자이크와 가림 박스를 지우고 원본으로 되돌리시겠습니까?")
-            .setPositiveButton("초기화") { _, _ ->
+            .setTitle(getString(R.string.confirm_clear_all_2))
+            .setMessage(getString(R.string.confirm_clear_all_3))
+            .setPositiveButton(getString(R.string.confirm_clear_all_4)) { _, _ ->
                 mosaicView.clearAll()
-                Toast.makeText(this, "모든 작업이 초기화되었습니다.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.confirm_clear_all_5), Toast.LENGTH_SHORT).show()
             }
-            .setNegativeButton("취소", null)
+            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
             .show()
     }
 
@@ -1556,8 +1677,8 @@ class MainActivity : ComponentActivity() {
         }
 
         val tvInfo = TextView(this).apply {
-            val currentLoc = if (targetFolderUriString != null) "지정된 시스템 폴더" else "Pictures/$targetFolderName"
-            text = "현재 저장 위치: $currentLoc\n저장할 갤러리 앨범 폴더명을 입력하거나 시스템 폴더를 선택하세요."
+            val currentLoc = if (targetFolderUriString != null) getString(R.string.show_folder_setting_dialog_1) else "Pictures/$targetFolderName"
+            text = getString(R.string.show_folder_setting_dialog_2, currentLoc)
             setTextColor(colorTextSecondary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             setPadding(0, 0, 0, dp(10))
@@ -1566,7 +1687,7 @@ class MainActivity : ComponentActivity() {
 
         val editText = EditText(this).apply {
             setText(targetFolderName)
-            hint = "앨범 폴더명 입력 (예: 당근마켓, 송장가림)"
+            hint = getString(R.string.show_folder_setting_dialog_3)
             setSingleLine(true)
             setTextColor(colorTextPrimary)
             setHintTextColor(colorTextSecondary)
@@ -1575,7 +1696,7 @@ class MainActivity : ComponentActivity() {
         dialogView.addView(editText)
 
         val btnSelectSaf = TextView(this).apply {
-            text = "📂 시스템 탐색기로 직접 폴더 지정하기"
+            text = getString(R.string.show_folder_setting_dialog_4)
             setTextColor(Color.parseColor("#4F46E5"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.DEFAULT_BOLD
@@ -1585,22 +1706,22 @@ class MainActivity : ComponentActivity() {
         dialogView.addView(btnSelectSaf)
 
         val dialog = dialogBuilder()
-            .setTitle("저장 폴더 설정")
+            .setTitle(getString(R.string.show_folder_setting_dialog_5))
             .setView(dialogView)
-            .setPositiveButton("저장") { _, _ ->
+            .setPositiveButton(getString(R.string.create_top_header_bar_7)) { _, _ ->
                 val newName = editText.text.toString().trim()
                 if (newName.isNotEmpty()) {
                     targetFolderName = newName
                     targetFolderUriString = null
-                    Toast.makeText(this, "저장 앨범: Pictures/$newName", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, getString(R.string.show_folder_setting_dialog_6, newName), Toast.LENGTH_SHORT).show()
                 }
             }
-            .setNeutralButton("기본값 복원") { _, _ ->
+            .setNeutralButton(getString(R.string.show_folder_setting_dialog_7)) { _, _ ->
                 targetFolderName = "PrivacyEraser"
                 targetFolderUriString = null
-                Toast.makeText(this, "기본 폴더로 복원되었습니다.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.show_folder_setting_dialog_8), Toast.LENGTH_SHORT).show()
             }
-            .setNegativeButton("취소", null)
+            .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
             .create()
 
         btnSelectSaf.setOnClickListener {
@@ -1628,15 +1749,41 @@ class MainActivity : ComponentActivity() {
 
     // 일반 편집 이미지 저장
     private fun saveImageAsync() {
-        val bitmapToSave = mosaicView.exportBitmap() ?: run {
-            Toast.makeText(this, "저장할 이미지가 없습니다.", Toast.LENGTH_SHORT).show()
+        if (isSaving) {
+            Toast.makeText(this, getString(R.string.save_image_async_1), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val export = mosaicView.prepareExport() ?: run {
+            Toast.makeText(this, getString(R.string.save_image_async_2), Toast.LENGTH_SHORT).show()
             return
         }
 
-        Toast.makeText(this, "개인정보 삭제 및 고화질 저장 중...", Toast.LENGTH_SHORT).show()
+        isSaving = true
+        Toast.makeText(this, getString(R.string.save_image_async_3), Toast.LENGTH_SHORT).show()
         thread {
+            // 원본 크기 합성은 메모리를 많이 쓰므로 백그라운드에서 처리하고 메모리 부족에 대비
+            val bitmapToSave = try {
+                export()
+            } catch (_: OutOfMemoryError) {
+                null
+            }
+            if (bitmapToSave == null) {
+                runOnUiThread {
+                    isSaving = false
+                    showOutOfMemoryMessage()
+                }
+                return@thread
+            }
             executeSaveBitmap(bitmapToSave, isQuickClean = false)
         }
+    }
+
+    private fun showOutOfMemoryMessage() {
+        dialogBuilder()
+            .setTitle(getString(R.string.show_out_of_memory_message_1))
+            .setMessage(getString(R.string.show_out_of_memory_message_2))
+            .setPositiveButton(getString(R.string.show_privacy_info_dialog_5), null)
+            .show()
     }
 
     // 비트맵을 새로 인코딩해 저장 (EXIF는 인코딩 과정에서 전부 사라짐)
@@ -1662,40 +1809,41 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onImageSaved(savedUri: Uri?, isQuickClean: Boolean, mimeType: String) {
+        isSaving = false
         if (savedUri != null) {
             // UI를 메타데이터 제거 완료 상태로 갱신
             currentMetadata = currentMetadata?.copy(isAlreadyClean = true)
             updateExifUi(currentMetadata)
             showSaveSuccessAndShareDialog(savedUri, isQuickClean, mimeType)
         } else {
-            Toast.makeText(this, "저장에 실패했습니다. 저장소 권한을 확인해주세요.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.on_image_saved_1), Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun showSaveSuccessAndShareDialog(savedUri: Uri, isQuickClean: Boolean, mimeType: String) {
-        val title = if (isQuickClean) "메타데이터 삭제 완료" else "개인정보 삭제 및 저장 완료"
+        val title = if (isQuickClean) getString(R.string.show_save_success_and_share_dialog_1) else getString(R.string.show_save_success_and_share_dialog_2)
         val originalUri = currentImageUri
         val canDelete = canDeleteOriginal(originalUri)
-        val message = "개인정보를 지운 새 사진이 저장되었습니다.\n\n" +
-                "🛡️ [새 사진에서 제거된 정보]\n" +
-                "• GPS 위치정보\n" +
-                "• 카메라·스마트폰 기종 정보\n" +
-                "• 촬영 일시 및 소프트웨어 정보\n\n" +
-                "⚠️ 원본 사진은 갤러리에 그대로 남아 있습니다." +
-                (if (canDelete) " 필요하면 '원본 삭제'로 지울 수 있어요." else " 필요하면 갤러리에서 직접 삭제해주세요.")
+        val message = getString(R.string.show_save_success_and_share_dialog_3) +
+                getString(R.string.show_save_success_and_share_dialog_4) +
+                getString(R.string.show_save_success_and_share_dialog_5) +
+                getString(R.string.show_save_success_and_share_dialog_6) +
+                getString(R.string.show_save_success_and_share_dialog_7) +
+                getString(R.string.show_save_success_and_share_dialog_8) +
+                (if (canDelete) getString(R.string.show_save_success_and_share_dialog_9) else getString(R.string.show_save_success_and_share_dialog_10))
 
         val builder = dialogBuilder()
             .setTitle(title)
             .setMessage(message)
-            .setPositiveButton("바로 공유하기") { _, _ ->
+            .setPositiveButton(getString(R.string.show_save_success_and_share_dialog_11)) { _, _ ->
                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                     type = mimeType
                     putExtra(Intent.EXTRA_STREAM, savedUri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                startActivity(Intent.createChooser(shareIntent, "안전한 사진 공유"))
+                startActivity(Intent.createChooser(shareIntent, getString(R.string.show_save_success_and_share_dialog_12)))
             }
-            .setNeutralButton("갤러리에서 보기") { _, _ ->
+            .setNeutralButton(getString(R.string.show_save_success_and_share_dialog_13)) { _, _ ->
                 val viewIntent = Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(savedUri, mimeType)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -1703,14 +1851,14 @@ class MainActivity : ComponentActivity() {
                 try {
                     startActivity(viewIntent)
                 } catch (_: Exception) {
-                    Toast.makeText(this, "사진을 열 수 있는 갤러리 앱이 없습니다.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, getString(R.string.show_save_success_and_share_dialog_14), Toast.LENGTH_SHORT).show()
                 }
             }
 
         if (canDelete && originalUri != null) {
-            builder.setNegativeButton("원본 삭제") { _, _ -> deleteOriginal(originalUri) }
+            builder.setNegativeButton(getString(R.string.show_save_success_and_share_dialog_15)) { _, _ -> deleteOriginal(originalUri) }
         } else {
-            builder.setNegativeButton("확인", null)
+            builder.setNegativeButton(getString(R.string.show_privacy_info_dialog_5), null)
         }
         builder.show()
     }
@@ -1736,13 +1884,13 @@ class MainActivity : ComponentActivity() {
     private fun deleteOriginal(uri: Uri) {
         if (DocumentsContract.isDocumentUri(this, uri)) {
             dialogBuilder()
-                .setTitle("원본 사진 삭제")
-                .setMessage("원본 사진을 삭제할까요? 삭제하면 되돌릴 수 없습니다.")
-                .setPositiveButton("삭제") { _, _ ->
+                .setTitle(getString(R.string.delete_original_1))
+                .setMessage(getString(R.string.delete_original_2))
+                .setPositiveButton(getString(R.string.delete_original_3)) { _, _ ->
                     val ok = try { DocumentsContract.deleteDocument(contentResolver, uri) } catch (_: Exception) { false }
-                    Toast.makeText(this, if (ok) "원본 사진을 삭제했습니다." else "원본을 삭제하지 못했습니다.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, if (ok) getString(R.string.original_deleted) else getString(R.string.delete_original_4), Toast.LENGTH_SHORT).show()
                 }
-                .setNegativeButton("취소", null)
+                .setNegativeButton(getString(R.string.show_incoming_share_dialog_6), null)
                 .show()
             return
         }
@@ -1752,7 +1900,7 @@ class MainActivity : ComponentActivity() {
                 val request = MediaStore.createDeleteRequest(contentResolver, listOf(uri))
                 deleteOriginalLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
             } catch (_: Exception) {
-                Toast.makeText(this, "원본을 삭제하지 못했습니다. 갤러리에서 직접 삭제해주세요.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.delete_original_5), Toast.LENGTH_SHORT).show()
             }
         }
     }
