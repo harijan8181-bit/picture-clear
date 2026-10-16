@@ -3,7 +3,6 @@ package com.harijan.exiferaser
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
@@ -11,7 +10,6 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
-import android.graphics.Shader
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -112,28 +110,12 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
         strokeWidth = 5f * context.resources.displayMetrics.density
     }
 
-    private val checkerboardPaint = Paint().apply {
-        val checkSize = (12 * context.resources.displayMetrics.density).toInt()
-        val pattern = Bitmap.createBitmap(checkSize * 2, checkSize * 2, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(pattern)
-        val p1 = Paint()
-        val p2 = Paint()
-
-        if (isNightMode) {
-            p1.color = Color.parseColor("#090D16")
-            p2.color = Color.parseColor("#131B2E")
-        } else {
-            p1.color = Color.parseColor("#ECEFF3")
-            p2.color = Color.parseColor("#DEE2E8")
+    // 작업 화면 배경색 (앱 테마 배경과 맞춤)
+    var canvasColor: Int = if (isNightMode) Color.parseColor("#0B0E17") else Color.parseColor("#F5F6FB")
+        set(value) {
+            field = value
+            invalidate()
         }
-
-        canvas.drawRect(0f, 0f, checkSize.toFloat(), checkSize.toFloat(), p1)
-        canvas.drawRect(checkSize.toFloat(), 0f, (checkSize * 2).toFloat(), checkSize.toFloat(), p2)
-        canvas.drawRect(0f, checkSize.toFloat(), checkSize.toFloat(), (checkSize * 2).toFloat(), p2)
-        canvas.drawRect(checkSize.toFloat(), checkSize.toFloat(), (checkSize * 2).toFloat(), (checkSize * 2).toFloat(), p1)
-
-        shader = BitmapShader(pattern, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
-    }
 
     private val baseFitMatrix = Matrix()
     private val userTransformMatrix = Matrix()
@@ -378,7 +360,7 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), checkerboardPaint)
+        canvas.drawColor(canvasColor)
 
         val bmp = baseBitmap ?: return
         val r = renderer ?: return

@@ -9,7 +9,9 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.*
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
 import androidx.exifinterface.media.ExifInterface
 import android.net.Uri
@@ -22,6 +24,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.*
@@ -30,6 +33,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.gms.ads.AdRequest
@@ -93,13 +97,12 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var mosaicView: MosaicView
     private lateinit var adView: AdView
-    private lateinit var btnPickEmpty: TextView
-    private lateinit var tvPrivacyNote: TextView
+    private lateinit var emptyState: View
     private lateinit var tvExifBadge: TextView
     private lateinit var bannerExifWarning: LinearLayout
     private lateinit var tvBannerText: TextView
-    private lateinit var btnUndo: TextView
-    private lateinit var btnRedo: TextView
+    private lateinit var btnUndo: View
+    private lateinit var btnRedo: View
     private lateinit var btnMosaic: TextView
     private lateinit var btnBlackBox: TextView
     private lateinit var btnWhiteBox: TextView
@@ -120,6 +123,9 @@ class MainActivity : ComponentActivity() {
     private var colorRipple = 0
     private var colorWarningBg = 0
     private var colorWarningText = 0
+    private var colorPrimary = 0
+    private var colorPrimaryEnd = 0
+    private var colorPrimarySoft = 0
 
     enum class BrushLevel(val labelRes: Int, val scale: Float) {
         SMALL(R.string.brush_small, 0.5f),
@@ -295,6 +301,7 @@ class MainActivity : ComponentActivity() {
         mosaicView = MosaicView(this, isNightMode).apply {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             onHistoryChanged = { updateUndoRedoButtons() }
+            canvasColor = colorBg
             contentDescription = getString(R.string.on_create_1)
         }
         canvasFrame.addView(mosaicView)
@@ -303,45 +310,9 @@ class MainActivity : ComponentActivity() {
         bannerExifWarning = createExifWarningBanner()
         canvasFrame.addView(bannerExifWarning)
 
-        // 사진이 없을 때 표시되는 중앙 버튼
-        btnPickEmpty = TextView(this).apply {
-            text = getString(R.string.on_create_2)
-            setTextColor(colorTextPrimary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            val shape = GradientDrawable().apply {
-                setColor(colorBar)
-                cornerRadius = dp(24).toFloat()
-                setStroke(dp(1), colorBorder)
-            }
-            background = RippleDrawable(ColorStateList.valueOf(colorRipple), shape, null)
-            val lp = FrameLayout.LayoutParams(dp(160), dp(48)).apply {
-                gravity = Gravity.CENTER
-            }
-            layoutParams = lp
-            addPressAnimation()
-            setOnClickListener {
-                showPhotoSourceDialog()
-            }
-        }
-        canvasFrame.addView(btnPickEmpty)
-        tvPrivacyNote = TextView(this).apply {
-            text = getString(R.string.on_create_3)
-            setTextColor(colorTextSecondary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-            gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.CENTER
-                topMargin = dp(64)
-            }
-            addPressAnimation()
-            setOnClickListener { showPrivacyInfoDialog() }
-        }
-        canvasFrame.addView(tvPrivacyNote)
+        // 사진이 없을 때 보여주는 시작 화면 (앱 소개 + 사진 선택)
+        emptyState = createEmptyState()
+        canvasFrame.addView(emptyState)
         root.addView(canvasFrame)
 
         // 4. 하단 세그먼트 도구 바
@@ -474,140 +445,234 @@ class MainActivity : ComponentActivity() {
         val nightModeFlags = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         isNightMode = nightModeFlags == Configuration.UI_MODE_NIGHT_YES
 
+        // 앱 아이콘의 남보라 계열과 맞춘 색 구성
         if (isNightMode) {
-            colorBg = Color.parseColor("#090D16")
-            colorBar = Color.parseColor("#131B2E")
-            colorBorder = Color.parseColor("#1E293B")
-            colorTextPrimary = Color.parseColor("#F8FAFC")
-            colorTextSecondary = Color.parseColor("#94A3B8")
-            colorSegmentBg = Color.parseColor("#1E293B")
-            colorSegmentSelectedBg = Color.parseColor("#6366F1")
-            colorSegmentSelectedText = Color.parseColor("#FFFFFF")
-            colorRipple = Color.parseColor("#22FFFFFF")
-            colorWarningBg = Color.parseColor("#3B1D22")
+            colorBg = Color.parseColor("#0B0E17")
+            colorBar = Color.parseColor("#121826")
+            colorBorder = Color.parseColor("#232B3E")
+            colorTextPrimary = Color.parseColor("#F3F4F8")
+            colorTextSecondary = Color.parseColor("#98A2B3")
+            colorSegmentBg = Color.parseColor("#1B2233")
+            colorPrimary = Color.parseColor("#7C7CFF")
+            colorPrimaryEnd = Color.parseColor("#A78BFA")
+            colorPrimarySoft = Color.parseColor("#252A52")
+            colorRipple = Color.parseColor("#33FFFFFF")
+            colorWarningBg = Color.parseColor("#3A1A20")
             colorWarningText = Color.parseColor("#F87171")
         } else {
-            colorBg = Color.parseColor("#F8FAFC")
+            colorBg = Color.parseColor("#F5F6FB")
             colorBar = Color.parseColor("#FFFFFF")
-            colorBorder = Color.parseColor("#E2E8F0")
-            colorTextPrimary = Color.parseColor("#0F172A")
-            colorTextSecondary = Color.parseColor("#64748B")
-            colorSegmentBg = Color.parseColor("#F1F5F9")
-            colorSegmentSelectedBg = Color.parseColor("#6366F1")
-            colorSegmentSelectedText = Color.parseColor("#FFFFFF")
-            colorRipple = Color.parseColor("#22000000")
+            colorBorder = Color.parseColor("#E6E8F0")
+            colorTextPrimary = Color.parseColor("#111827")
+            colorTextSecondary = Color.parseColor("#6B7280")
+            colorSegmentBg = Color.parseColor("#EEF0F6")
+            colorPrimary = Color.parseColor("#5B5BF6")
+            colorPrimaryEnd = Color.parseColor("#8B5CF6")
+            colorPrimarySoft = Color.parseColor("#ECEBFE")
+            colorRipple = Color.parseColor("#225B5BF6")
             colorWarningBg = Color.parseColor("#FEF2F2")
             colorWarningText = Color.parseColor("#DC2626")
         }
+        colorSegmentSelectedBg = colorPrimary
+        colorSegmentSelectedText = Color.WHITE
     }
 
-    // 1층 상단 헤더 바
+    // ---------- 공통 디자인 요소 ----------
+
+    private fun rounded(color: Int, radiusDp: Int, strokeColor: Int? = null) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radiusDp).toFloat()
+        strokeColor?.let { setStroke(dp(1), it) }
+    }
+
+    /** 앱 아이콘과 같은 남색→보라 그라데이션 (주요 버튼용, 흰 글자가 잘 보이도록 다크 모드에서도 진한 색 유지) */
+    private fun primaryGradient(radiusDp: Int) = GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(Color.parseColor("#5B5BF6"), Color.parseColor("#8B5CF6"))
+    ).apply { cornerRadius = dp(radiusDp).toFloat() }
+
+    /** 아이콘과 글자가 가운데에 나란히 붙어 있는 버튼 */
+    private fun createIconTextButton(
+        iconRes: Int,
+        label: String,
+        textColor: Int,
+        iconColor: Int,
+        bg: Drawable,
+        heightDp: Int,
+        onClick: () -> Unit
+    ) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER
+        background = bg
+        isClickable = true
+        isFocusable = true
+        contentDescription = label
+        layoutParams = LinearLayout.LayoutParams(dp(300), dp(heightDp))
+        addView(ImageView(this@MainActivity).apply {
+            setImageDrawable(tintedIcon(iconRes, iconColor, 22))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        })
+        addView(TextView(this@MainActivity).apply {
+            text = label
+            setTextColor(textColor)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            typeface = Typeface.DEFAULT_BOLD
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(8) }
+        })
+        addPressAnimation()
+        setOnClickListener { onClick() }
+    }
+
+    private fun withRipple(content: Drawable, rippleColor: Int = colorRipple) =
+        RippleDrawable(ColorStateList.valueOf(rippleColor), content, null)
+
+    private fun tintedIcon(resId: Int, color: Int, sizeDp: Int = 18): Drawable =
+        ContextCompat.getDrawable(this, resId)!!.mutate().apply {
+            setTint(color)
+            setBounds(0, 0, dp(sizeDp), dp(sizeDp))
+        }
+
+    /** 앱 아이콘을 둥근 사각형으로 잘라 보여주는 로고 */
+    private fun createLogo(sizeDp: Int, cornerDp: Int) = ImageView(this).apply {
+        // 런처 아이콘은 기기마다 원·물방울 등 모양이 달라 그림자와 어긋나므로,
+        // 배경·전경 레이어를 직접 겹쳐 어느 기기에서나 같은 둥근 사각형으로 보이게 함
+        val layers = LayerDrawable(
+            arrayOf(
+                ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_launcher_background)!!,
+                ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_launcher_foreground)!!
+            )
+        )
+        // 전경의 여백을 줄여 그림이 조금 더 크게 보이도록
+        val zoom = -dp(sizeDp) * 15 / 100
+        layers.setLayerInset(1, zoom, zoom, zoom, zoom)
+        setImageDrawable(layers)
+        scaleType = ImageView.ScaleType.FIT_XY
+        layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, dp(cornerDp).toFloat())
+            }
+        }
+        clipToOutline = true
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    // 1층 상단 헤더 바: 로고 + 앱 이름(아래에 메타데이터 상태 뱃지) / 아이콘 버튼 + 저장
     private fun createTopHeaderBar(): View {
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56))
-            setPadding(dp(12), 0, dp(12), 0)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(64))
+            setPadding(dp(16), 0, dp(12), 0)
             setBackgroundColor(colorBar)
         }
 
-        val titleContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-        }
+        topBar.addView(createLogo(sizeDp = 36, cornerDp = 11))
 
-        val tvAppTitle = TextView(this).apply {
+        val titleColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                marginStart = dp(10)
+            }
+        }
+        titleColumn.addView(TextView(this).apply {
             text = getString(R.string.create_top_header_bar_1)
             setTextColor(colorTextPrimary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
             typeface = Typeface.DEFAULT_BOLD
-        }
-        titleContainer.addView(tvAppTitle)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+        })
 
-        // 메타데이터 요약 뱃지
+        // 메타데이터 요약 뱃지 (사진을 불러오면 앱 이름 아래에 표시)
         tvExifBadge = TextView(this).apply {
             text = ""
             visibility = View.GONE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.DEFAULT_BOLD
             isSingleLine = true
-            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(8), dp(3), dp(8), dp(3))
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                marginStart = dp(8)
-            }
-            layoutParams = lp
+            setPadding(dp(8), dp(2), dp(8), dp(2))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(3) }
             addPressAnimation()
             setOnClickListener { showExifDetailsDialog() }
         }
-        titleContainer.addView(tvExifBadge)
-        topBar.addView(titleContainer)
+        titleColumn.addView(tvExifBadge)
+        topBar.addView(titleColumn)
 
-        // 우측 액션 버튼들 (정보, 취소, 다시실행, 저장)
-        val actionsContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val btnExifInfo = createHeaderActionButton(getString(R.string.create_top_header_bar_2)) {
+        topBar.addView(createIconButton(R.drawable.ic_info, getString(R.string.create_top_header_bar_2)) {
             if (mosaicView.getBaseBitmap() == null) {
                 Toast.makeText(this, getString(R.string.create_top_header_bar_3), Toast.LENGTH_SHORT).show()
             } else {
                 showExifDetailsDialog()
             }
-        }
-        actionsContainer.addView(btnExifInfo)
+        })
 
-        btnUndo = createHeaderActionButton(getString(R.string.show_incoming_share_dialog_6)) {
-            val undone = mosaicView.undo()
-            if (!undone) {
+        btnUndo = createIconButton(R.drawable.ic_undo, getString(R.string.show_incoming_share_dialog_6)) {
+            if (!mosaicView.undo()) {
                 Toast.makeText(this, getString(R.string.create_top_header_bar_4), Toast.LENGTH_SHORT).show()
             }
         }
-        actionsContainer.addView(btnUndo)
+        topBar.addView(btnUndo)
 
-        btnRedo = createHeaderActionButton(getString(R.string.create_top_header_bar_5)) {
-            val redone = mosaicView.redo()
-            if (!redone) {
+        btnRedo = createIconButton(R.drawable.ic_redo, getString(R.string.create_top_header_bar_5)) {
+            if (!mosaicView.redo()) {
                 Toast.makeText(this, getString(R.string.create_top_header_bar_6), Toast.LENGTH_SHORT).show()
             }
         }
-        actionsContainer.addView(btnRedo)
+        topBar.addView(btnRedo)
 
         val btnSave = TextView(this).apply {
             text = getString(R.string.create_top_header_bar_7)
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            setPadding(dp(16), dp(6), dp(16), dp(6))
-            val shape = GradientDrawable().apply {
-                setColor(Color.parseColor("#4F46E5"))
-                cornerRadius = dp(14).toFloat()
-            }
-            background = RippleDrawable(ColorStateList.valueOf(Color.parseColor("#44FFFFFF")), shape, null)
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
+            setCompoundDrawablesRelative(tintedIcon(R.drawable.ic_check, Color.WHITE, 18), null, null, null)
+            compoundDrawablePadding = dp(4)
+            setPadding(dp(12), 0, dp(16), 0)
+            background = withRipple(primaryGradient(20), Color.parseColor("#44FFFFFF"))
+            elevation = dp(2).toFloat()
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
                 marginStart = dp(6)
             }
-            layoutParams = lp
             addPressAnimation()
             setOnClickListener { saveImageAsync() }
         }
-        actionsContainer.addView(btnSave)
-
-        topBar.addView(actionsContainer)
+        topBar.addView(btnSave)
         return topBar
     }
 
-    // 2층 도구 스크롤 바
+    /** 아이콘만 있는 둥근 버튼 (화면 낭독기는 label을 읽음) */
+    private fun createIconButton(iconRes: Int, label: String, onClick: () -> Unit) = ImageView(this).apply {
+        setImageDrawable(tintedIcon(iconRes, colorTextPrimary, 22))
+        scaleType = ImageView.ScaleType.CENTER
+        contentDescription = label
+        background = withRipple(rounded(Color.TRANSPARENT, 20))
+        layoutParams = LinearLayout.LayoutParams(dp(42), dp(42))
+        addPressAnimation()
+        setOnClickListener { onClick() }
+    }
+
+    // 2층 도구 바: 사진이 있어야 쓸 수 있는 도구는 사진을 불러오기 전까지 흐리게 표시
     private fun createSubToolBar(): View {
-        val scroll = HorizontalScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52))
-            isHorizontalScrollBarEnabled = false
+        val wrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setBackgroundColor(colorBar)
-            setPadding(dp(8), dp(3), dp(8), dp(5))
+        }
+        val scroll = HorizontalScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54))
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            setPadding(dp(12), dp(4), dp(12), dp(10))
         }
 
         val container = LinearLayout(this).apply {
@@ -615,44 +680,209 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val btnPick = createPillToolButton(getString(R.string.create_sub_tool_bar_1)) {
+        container.addView(createToolChip(R.drawable.ic_photo_add, R.string.create_sub_tool_bar_1, needsImage = false) {
             showPhotoSourceDialog()
-        }
-        val btnAutoText = createPillToolButton(getString(R.string.create_sub_tool_bar_2)) {
+        })
+        container.addView(createToolChip(R.drawable.ic_search, R.string.create_sub_tool_bar_2, needsImage = true) {
             detectSensitiveInfo()
-        }
-        val btnAutoFace = createPillToolButton(getString(R.string.create_sub_tool_bar_3)) {
+        })
+        container.addView(createToolChip(R.drawable.ic_face, R.string.create_sub_tool_bar_3, needsImage = true) {
             detectFacesAndMosaic()
-        }
-        val btnFastClean = createPillToolButton(getString(R.string.create_sub_tool_bar_4)) {
+        })
+        container.addView(createToolChip(R.drawable.ic_bolt, R.string.create_sub_tool_bar_4, needsImage = true) {
             quickCleanAndSave()
-        }
-        val btnBatch = createPillToolButton(getString(R.string.create_sub_tool_bar_5)) {
+        })
+        container.addView(createToolChip(R.drawable.ic_photo_library, R.string.create_sub_tool_bar_5, needsImage = false) {
             startBatchClean()
-        }
-        val btnResetZoom = createPillToolButton(getString(R.string.create_sub_tool_bar_6)) {
+        })
+        container.addView(createToolChip(R.drawable.ic_fit_screen, R.string.create_sub_tool_bar_6, needsImage = true) {
             mosaicView.resetZoom()
             Toast.makeText(this, getString(R.string.create_sub_tool_bar_7), Toast.LENGTH_SHORT).show()
-        }
-        val btnClearAll = createPillToolButton(getString(R.string.create_sub_tool_bar_8)) {
+        })
+        container.addView(createToolChip(R.drawable.ic_delete, R.string.create_sub_tool_bar_8, needsImage = true) {
             confirmClearAll()
-        }
-        val btnFolder = createPillToolButton(getString(R.string.create_sub_tool_bar_9)) {
+        })
+        container.addView(createToolChip(R.drawable.ic_folder, R.string.create_sub_tool_bar_9, needsImage = false) {
             showFolderSettingDialog()
-        }
-
-        container.addView(btnPick)
-        container.addView(btnAutoText)
-        container.addView(btnAutoFace)
-        container.addView(btnFastClean)
-        container.addView(btnBatch)
-        container.addView(btnResetZoom)
-        container.addView(btnClearAll)
-        container.addView(btnFolder)
-        container.addView(createPillToolButton(getString(R.string.create_sub_tool_bar_10)) { showPrivacyInfoDialog() })
+        })
+        container.addView(createToolChip(R.drawable.ic_shield, R.string.create_sub_tool_bar_10, needsImage = false) {
+            showPrivacyInfoDialog()
+        })
 
         scroll.addView(container)
-        return scroll
+        wrapper.addView(scroll)
+        // 도구 바와 작업 화면 사이 구분선
+        wrapper.addView(View(this).apply {
+            setBackgroundColor(colorBorder)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+        })
+        setImageToolsEnabled(false)
+        return wrapper
+    }
+
+    private val imageToolChips = mutableListOf<View>()
+
+    private fun createToolChip(iconRes: Int, labelRes: Int, needsImage: Boolean, onClick: () -> Unit): TextView {
+        val label = accessibleLabel(getString(labelRes))
+        return TextView(this).apply {
+            text = label
+            contentDescription = label
+            setTextColor(colorTextPrimary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setCompoundDrawablesRelative(tintedIcon(iconRes, colorPrimary, 18), null, null, null)
+            compoundDrawablePadding = dp(6)
+            setPadding(dp(12), 0, dp(14), 0)
+            background = withRipple(rounded(colorSegmentBg, 20))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
+                marginEnd = dp(8)
+            }
+            addPressAnimation()
+            setOnClickListener { onClick() }
+            if (needsImage) imageToolChips.add(this)
+        }
+    }
+
+    /** 사진이 없을 때는 사진이 필요한 도구를 흐리게 (눌러도 안내 메시지가 나오므로 비활성화하지는 않음) */
+    private fun setImageToolsEnabled(enabled: Boolean) {
+        imageToolChips.forEach { it.alpha = if (enabled) 1f else 0.4f }
+    }
+
+    // 시작 화면: 로고, 한 줄 소개, 사진 선택 버튼, 주요 기능, 개인정보 안내
+    private fun createEmptyState(): View {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(28), dp(24), dp(28), dp(24))
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        }
+
+        content.addView(createLogo(sizeDp = 84, cornerDp = 24).apply {
+            elevation = dp(6).toFloat()
+        })
+
+        content.addView(TextView(this).apply {
+            text = getString(R.string.empty_title)
+            setTextColor(colorTextPrimary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 23f)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setLineSpacing(0f, 1.15f)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(22) }
+        })
+
+        content.addView(TextView(this).apply {
+            text = getString(R.string.empty_subtitle)
+            setTextColor(colorTextSecondary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            gravity = Gravity.CENTER
+            setLineSpacing(0f, 1.3f)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        })
+
+        // 주요 버튼: 사진 선택
+        content.addView(
+            createIconTextButton(
+                R.drawable.ic_photo_add, getString(R.string.on_create_2),
+                textColor = Color.WHITE, iconColor = Color.WHITE,
+                bg = withRipple(primaryGradient(18), Color.parseColor("#44FFFFFF")),
+                heightDp = 56
+            ) { showPhotoSourceDialog() }.apply {
+                elevation = dp(4).toFloat()
+                (layoutParams as LinearLayout.LayoutParams).topMargin = dp(30)
+            }
+        )
+
+        // 보조 버튼: 여러 장 한 번에
+        content.addView(
+            createIconTextButton(
+                R.drawable.ic_photo_library, getString(R.string.empty_batch),
+                textColor = colorTextPrimary, iconColor = colorPrimary,
+                bg = withRipple(rounded(colorBar, 18, colorBorder)),
+                heightDp = 52
+            ) { startBatchClean() }.apply {
+                (layoutParams as LinearLayout.LayoutParams).topMargin = dp(10)
+            }
+        )
+
+        // 주요 기능 3가지
+        val features = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(dp(300), LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(30)
+            }
+        }
+        listOf(
+            R.drawable.ic_location_off to R.string.feature_location,
+            R.drawable.ic_face to R.string.feature_face,
+            R.drawable.ic_search to R.string.feature_text
+        ).forEach { (iconRes, labelRes) ->
+            features.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(ImageView(this@MainActivity).apply {
+                    setImageDrawable(tintedIcon(iconRes, colorPrimary, 22))
+                    scaleType = ImageView.ScaleType.CENTER
+                    background = rounded(colorPrimarySoft, 16)
+                    layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = getString(labelRes)
+                    setTextColor(colorTextSecondary)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = dp(8) }
+                })
+            })
+        }
+        content.addView(features)
+
+        // 개인정보 안내 (누르면 자세한 설명)
+        content.addView(TextView(this).apply {
+            text = getString(R.string.on_create_3)
+            setTextColor(colorTextSecondary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            gravity = Gravity.CENTER
+            setCompoundDrawablesRelative(tintedIcon(R.drawable.ic_lock, colorTextSecondary, 14), null, null, null)
+            compoundDrawablePadding = dp(5)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = withRipple(rounded(Color.TRANSPARENT, 14))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(20) }
+            setOnClickListener { showPrivacyInfoDialog() }
+        })
+
+        // 작은 화면에서도 잘리지 않도록 스크롤 가능하게
+        return ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            setBackgroundColor(colorBg)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            addView(FrameLayout(this@MainActivity).apply {
+                addView(content)
+            })
+        }
     }
 
     // EXIF 위험 경고 플로팅 배너
@@ -702,17 +932,15 @@ class MainActivity : ComponentActivity() {
     private fun createBottomToolBar(): View {
         val bottomBar = LinearLayout(this).apply {
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(64))
             setBackgroundColor(colorBar)
-            setPadding(dp(8), 0, dp(8), 0)
+            elevation = dp(8).toFloat()
+            setPadding(dp(12), 0, dp(12), 0)
         }
 
         val segmentContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = GradientDrawable().apply {
-                setColor(colorSegmentBg)
-                cornerRadius = dp(16).toFloat()
-            }
+            background = rounded(colorSegmentBg, 17)
             setPadding(dp(3), dp(3), dp(3), dp(3))
         }
 
@@ -743,15 +971,13 @@ class MainActivity : ComponentActivity() {
             text = getString(R.string.create_bottom_tool_bar_7, getString(currentBrushLevel.labelRes))
             contentDescription = getString(R.string.create_bottom_tool_bar_8, getString(currentBrushLevel.labelRes))
             setTextColor(colorTextPrimary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            val shape = GradientDrawable().apply {
-                setColor(colorSegmentBg)
-                cornerRadius = dp(16).toFloat()
-            }
-            background = RippleDrawable(ColorStateList.valueOf(colorRipple), shape, null)
-            setPadding(dp(10), dp(6), dp(10), dp(6))
+            setCompoundDrawablesRelative(tintedIcon(R.drawable.ic_brush, colorPrimary, 16), null, null, null)
+            compoundDrawablePadding = dp(5)
+            background = withRipple(rounded(colorSegmentBg, 20))
+            setPadding(dp(12), 0, dp(14), 0)
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
                 marginStart = dp(10)
             }
@@ -852,53 +1078,7 @@ class MainActivity : ComponentActivity() {
         builder.show()
     }
 
-    private fun createHeaderActionButton(text: String, onClick: () -> Unit): TextView {
-        return TextView(this).apply {
-            this.text = text
-            contentDescription = accessibleLabel(text)
-            setTextColor(colorTextPrimary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            setPadding(dp(8), dp(4), dp(8), dp(4))
-            val shape = GradientDrawable().apply {
-                setColor(colorSegmentBg)
-                cornerRadius = dp(12).toFloat()
-            }
-            background = RippleDrawable(ColorStateList.valueOf(colorRipple), shape, null)
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
-                marginEnd = dp(4)
-            }
-            layoutParams = lp
-            addPressAnimation()
-            setOnClickListener { onClick() }
-        }
-    }
-
     private fun openSafeInputStream(uri: Uri): java.io.InputStream? = PhotoIo.openStream(this, uri)
-
-    private fun createPillToolButton(text: String, onClick: () -> Unit): TextView {
-        return TextView(this).apply {
-            this.text = text
-            contentDescription = accessibleLabel(text)
-            setTextColor(colorTextPrimary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            setPadding(dp(10), dp(4), dp(10), dp(4))
-            val shape = GradientDrawable().apply {
-                setColor(colorSegmentBg)
-                cornerRadius = dp(12).toFloat()
-            }
-            background = RippleDrawable(ColorStateList.valueOf(colorRipple), shape, null)
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply {
-                marginEnd = dp(6)
-            }
-            layoutParams = lp
-            addPressAnimation()
-            setOnClickListener { onClick() }
-        }
-    }
 
     private fun createSegmentItem(text: String, isSelected: Boolean, onClick: () -> Unit): TextView {
         return TextView(this).apply {
@@ -912,11 +1092,7 @@ class MainActivity : ComponentActivity() {
             this.setOnClickListener { onClick() }
             if (isSelected) {
                 setTextColor(colorSegmentSelectedText)
-                val base = GradientDrawable().apply {
-                    setColor(colorSegmentSelectedBg)
-                    cornerRadius = dp(13).toFloat()
-                }
-                background = RippleDrawable(ColorStateList.valueOf(colorRipple), base, null)
+                background = withRipple(primaryGradient(14))
             } else {
                 setTextColor(colorTextSecondary)
                 background = null
@@ -934,11 +1110,7 @@ class MainActivity : ComponentActivity() {
         for ((btn, isSelected) in buttons) {
             if (isSelected) {
                 btn.setTextColor(colorSegmentSelectedText)
-                val base = GradientDrawable().apply {
-                    setColor(colorSegmentSelectedBg)
-                    cornerRadius = dp(13).toFloat()
-                }
-                btn.background = RippleDrawable(ColorStateList.valueOf(colorRipple), base, null)
+                btn.background = withRipple(primaryGradient(14))
             } else {
                 btn.setTextColor(colorTextSecondary)
                 btn.background = null
@@ -1131,8 +1303,8 @@ class MainActivity : ComponentActivity() {
                 )
 
                 runOnUiThread {
-                    btnPickEmpty.visibility = View.GONE
-                    tvPrivacyNote.visibility = View.GONE
+                    emptyState.visibility = View.GONE
+                    setImageToolsEnabled(true)
                     mosaicView.setImage(finalBmp)
                     restoreHistory?.let { mosaicView.restoreHistory(it) }
                     updateExifUi(currentMetadata)
