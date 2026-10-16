@@ -60,6 +60,11 @@ android {
         }
     }
 
+    // 안드로이드 13+ 설정의 "앱 언어"에서 한국어/영어를 고를 수 있게 함 (기본 문구는 영어)
+    androidResources {
+        generateLocaleConfig = true
+    }
+
     buildFeatures {
         viewBinding = true
         buildConfig = true
@@ -77,6 +82,7 @@ dependencies {
     implementation(libs.mlkit.text.recognition.korean)
     implementation(libs.mlkit.barcode.scanning)
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("com.google.android.play:review:2.0.2")
 
     testImplementation(libs.junit)
 }

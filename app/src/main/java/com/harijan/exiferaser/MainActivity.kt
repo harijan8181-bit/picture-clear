@@ -39,6 +39,7 @@ import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
 import com.google.android.gms.ads.MobileAds
+import com.google.android.play.core.review.ReviewManagerFactory
 import com.google.android.ump.ConsentInformation
 import com.google.android.ump.ConsentRequestParameters
 import com.google.android.ump.UserMessagingPlatform
@@ -61,6 +62,12 @@ class MainActivity : ComponentActivity() {
         private const val STATE_HAS_IMAGE = "has_image"
         private const val STATE_IMAGE_URI = "image_uri"
         private const val STATE_MIME = "mime"
+
+        // 리뷰 요청: 저장 3번 성공 후, 한 번 요청하면 90일 동안 다시 묻지 않음
+        private const val PREF_SAVE_COUNT = "successful_save_count"
+        private const val PREF_REVIEW_ASKED_AT = "review_asked_at"
+        private const val REVIEW_MIN_SAVES = 3
+        private const val REVIEW_INTERVAL_MS = 90L * 24 * 60 * 60 * 1000
 
         // 저장소의 docs/privacy-policy.md (GitHub Pages를 켜면 그 주소로 바꿔도 됨)
         private const val PRIVACY_POLICY_URL =
@@ -613,7 +620,7 @@ class MainActivity : ComponentActivity() {
             }
         })
 
-        btnUndo = createIconButton(R.drawable.ic_undo, getString(R.string.show_incoming_share_dialog_6)) {
+        btnUndo = createIconButton(R.drawable.ic_undo, getString(R.string.action_undo)) {
             if (!mosaicView.undo()) {
                 Toast.makeText(this, getString(R.string.create_top_header_bar_4), Toast.LENGTH_SHORT).show()
             }
@@ -1203,90 +1210,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // 1. EXIF 메타데이터 정밀 분석
-                var metadata: PhotoMetadata? = null
-                openSafeInputStream(resolvedUri)?.use { stream ->
-                    val exif = ExifInterface(stream)
-                    val latLong = exif.latLong
-                    val hasGps = latLong != null
-                    val lat = latLong?.get(0)
-                    val lng = latLong?.get(1)
-                    val altitude = if (hasGps) exif.getAltitude(0.0).takeIf { it != 0.0 } else null
-                    val gpsDate = exif.getAttribute(ExifInterface.TAG_GPS_DATESTAMP)
-                    val gpsTime = exif.getAttribute(ExifInterface.TAG_GPS_TIMESTAMP)
-                    val gpsTimeStamp = if (gpsDate != null || gpsTime != null) listOfNotNull(gpsDate, gpsTime).joinToString(" ") else null
-
-                    val dateTime = exif.getAttribute(ExifInterface.TAG_DATETIME)
-                        ?: exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
-                        ?: exif.getAttribute(ExifInterface.TAG_DATETIME_DIGITIZED)
-                    val make = exif.getAttribute(ExifInterface.TAG_MAKE)
-                    val model = exif.getAttribute(ExifInterface.TAG_MODEL)
-                    val lensModel = exif.getAttribute(ExifInterface.TAG_LENS_MODEL)
-                        ?: exif.getAttribute(ExifInterface.TAG_LENS_MAKE)
-                    val software = exif.getAttribute(ExifInterface.TAG_SOFTWARE)
-                    val artist = exif.getAttribute(ExifInterface.TAG_ARTIST)
-                    val copyright = exif.getAttribute(ExifInterface.TAG_COPYRIGHT)
-                    val userComment = exif.getAttribute(ExifInterface.TAG_USER_COMMENT)
-                    val iso = exif.getAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY)
-                        ?: exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS)
-                    val fNumber = exif.getAttribute(ExifInterface.TAG_F_NUMBER)?.let { "f/$it" }
-                    val exposureTime = exif.getAttribute(ExifInterface.TAG_EXPOSURE_TIME)?.let { "${it}s" }
-                    val focalLength = exif.getAttribute(ExifInterface.TAG_FOCAL_LENGTH)?.let { "${it}mm" }
-                    val orientationInt = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-
-                    var tagCount = 0
-                    if (hasGps) tagCount += 2
-                    if (altitude != null) tagCount++
-                    if (gpsTimeStamp != null) tagCount++
-                    if (dateTime != null) tagCount++
-                    if (make != null) tagCount++
-                    if (model != null) tagCount++
-                    if (lensModel != null) tagCount++
-                    if (software != null) tagCount++
-                    if (artist != null) tagCount++
-                    if (copyright != null) tagCount++
-                    if (userComment != null) tagCount++
-                    if (iso != null) tagCount++
-                    if (fNumber != null) tagCount++
-                    if (exposureTime != null) tagCount++
-                    if (focalLength != null) tagCount++
-
-                    val orientationDesc = when (orientationInt) {
-                        ExifInterface.ORIENTATION_ROTATE_90 -> getString(R.string.load_bitmap_safely_4)
-                        ExifInterface.ORIENTATION_ROTATE_180 -> getString(R.string.load_bitmap_safely_5)
-                        ExifInterface.ORIENTATION_ROTATE_270 -> getString(R.string.load_bitmap_safely_6)
-                        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> getString(R.string.load_bitmap_safely_7)
-                        ExifInterface.ORIENTATION_FLIP_VERTICAL -> getString(R.string.load_bitmap_safely_8)
-                        ExifInterface.ORIENTATION_TRANSPOSE -> getString(R.string.load_bitmap_safely_9)
-                        ExifInterface.ORIENTATION_TRANSVERSE -> getString(R.string.load_bitmap_safely_10)
-                        else -> getString(R.string.load_bitmap_safely_11)
-                    }
-
-                    metadata = PhotoMetadata(
-                        hasGps = hasGps,
-                        latitude = lat,
-                        longitude = lng,
-                        altitude = altitude,
-                        gpsTimeStamp = gpsTimeStamp,
-                        dateTime = dateTime,
-                        cameraMake = make,
-                        cameraModel = model,
-                        lensModel = lensModel,
-                        software = software,
-                        artist = artist,
-                        copyright = copyright,
-                        userComment = userComment,
-                        iso = iso,
-                        fNumber = fNumber,
-                        exposureTime = exposureTime,
-                        focalLength = focalLength,
-                        orientationDesc = orientationDesc,
-                        mimeType = mime,
-                        width = 0,
-                        height = 0,
-                        totalTagsCount = tagCount,
-                        isAlreadyClean = false
-                    )
-                }
+                val metadata = openSafeInputStream(resolvedUri)?.use { readMetadata(it, mime) }
 
                 // 2. 비트맵 디코딩 (메모리 한도 내 최대 해상도 + EXIF 회전/반전 보정)
                 val finalBmp = PhotoIo.decodeUpright(this, resolvedUri, PhotoIo.maxDecodeDim())
@@ -1312,6 +1236,96 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** 사진 파일의 EXIF 메타데이터 분석 (불러온 원본과 저장된 결과 비교에 함께 사용) */
+    private fun readMetadata(stream: java.io.InputStream, mime: String?): PhotoMetadata? = try {
+        readMetadata(ExifInterface(stream), mime)
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun readMetadata(exif: ExifInterface, mime: String?): PhotoMetadata {
+        val latLong = exif.latLong
+        val hasGps = latLong != null
+        val lat = latLong?.get(0)
+        val lng = latLong?.get(1)
+        val altitude = if (hasGps) exif.getAltitude(0.0).takeIf { it != 0.0 } else null
+        val gpsDate = exif.getAttribute(ExifInterface.TAG_GPS_DATESTAMP)
+        val gpsTime = exif.getAttribute(ExifInterface.TAG_GPS_TIMESTAMP)
+        val gpsTimeStamp = if (gpsDate != null || gpsTime != null) listOfNotNull(gpsDate, gpsTime).joinToString(" ") else null
+
+        val dateTime = exif.getAttribute(ExifInterface.TAG_DATETIME)
+            ?: exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
+            ?: exif.getAttribute(ExifInterface.TAG_DATETIME_DIGITIZED)
+        val make = exif.getAttribute(ExifInterface.TAG_MAKE)
+        val model = exif.getAttribute(ExifInterface.TAG_MODEL)
+        val lensModel = exif.getAttribute(ExifInterface.TAG_LENS_MODEL)
+            ?: exif.getAttribute(ExifInterface.TAG_LENS_MAKE)
+        val software = exif.getAttribute(ExifInterface.TAG_SOFTWARE)
+        val artist = exif.getAttribute(ExifInterface.TAG_ARTIST)
+        val copyright = exif.getAttribute(ExifInterface.TAG_COPYRIGHT)
+        val userComment = exif.getAttribute(ExifInterface.TAG_USER_COMMENT)
+        val iso = exif.getAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY)
+            ?: exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS)
+        val fNumber = exif.getAttribute(ExifInterface.TAG_F_NUMBER)?.let { "f/$it" }
+        val exposureTime = exif.getAttribute(ExifInterface.TAG_EXPOSURE_TIME)?.let { "${it}s" }
+        val focalLength = exif.getAttribute(ExifInterface.TAG_FOCAL_LENGTH)?.let { "${it}mm" }
+        val orientationInt = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+
+        var tagCount = 0
+        if (hasGps) tagCount += 2
+        if (altitude != null) tagCount++
+        if (gpsTimeStamp != null) tagCount++
+        if (dateTime != null) tagCount++
+        if (make != null) tagCount++
+        if (model != null) tagCount++
+        if (lensModel != null) tagCount++
+        if (software != null) tagCount++
+        if (artist != null) tagCount++
+        if (copyright != null) tagCount++
+        if (userComment != null) tagCount++
+        if (iso != null) tagCount++
+        if (fNumber != null) tagCount++
+        if (exposureTime != null) tagCount++
+        if (focalLength != null) tagCount++
+
+        val orientationDesc = when (orientationInt) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> getString(R.string.load_bitmap_safely_4)
+            ExifInterface.ORIENTATION_ROTATE_180 -> getString(R.string.load_bitmap_safely_5)
+            ExifInterface.ORIENTATION_ROTATE_270 -> getString(R.string.load_bitmap_safely_6)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> getString(R.string.load_bitmap_safely_7)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> getString(R.string.load_bitmap_safely_8)
+            ExifInterface.ORIENTATION_TRANSPOSE -> getString(R.string.load_bitmap_safely_9)
+            ExifInterface.ORIENTATION_TRANSVERSE -> getString(R.string.load_bitmap_safely_10)
+            else -> getString(R.string.load_bitmap_safely_11)
+        }
+
+        return PhotoMetadata(
+            hasGps = hasGps,
+            latitude = lat,
+            longitude = lng,
+            altitude = altitude,
+            gpsTimeStamp = gpsTimeStamp,
+            dateTime = dateTime,
+            cameraMake = make,
+            cameraModel = model,
+            lensModel = lensModel,
+            software = software,
+            artist = artist,
+            copyright = copyright,
+            userComment = userComment,
+            iso = iso,
+            fNumber = fNumber,
+            exposureTime = exposureTime,
+            focalLength = focalLength,
+            orientationDesc = orientationDesc,
+            mimeType = mime,
+            width = 0,
+            height = 0,
+            totalTagsCount = tagCount,
+            isAlreadyClean = false
+        )
     }
 
     // EXIF 분석 결과에 따른 뱃지 및 배너 업데이트
@@ -1500,14 +1514,15 @@ class MainActivity : ComponentActivity() {
             val cleaned = sourceBytes?.let { PhotoIo.stripLossless(it) }
 
             if (cleaned != null) {
-                val mime = if (MetadataStripper.isPng(cleaned)) "image/png" else "image/jpeg"
+                val mime = MetadataStripper.mimeOf(cleaned)
                 val filename = "CLEAN_${System.currentTimeMillis()}.${PhotoIo.extensionFor(mime)}"
                 val savedUri = PhotoIo.save(this, filename, mime, targetFolderName, targetFolderUriString) {
                     it.write(cleaned)
                 }
-                runOnUiThread { onImageSaved(savedUri, isQuickClean = true, mimeType = mime) }
+                val report = savedUri?.let { buildSaveReport(it, mime, lossless = true) }
+                runOnUiThread { onImageSaved(savedUri, isQuickClean = true, mimeType = mime, report = report) }
             } else {
-                // HEIC·WebP 등 무손실 처리가 불가능한 형식은 재인코딩으로 메타데이터 제거
+                // HEIC 등 무손실 처리가 불가능한 형식은 재인코딩(JPEG)으로 메타데이터 제거
                 executeSaveBitmap(originalBmp, isQuickClean = true)
             }
         }
@@ -1776,12 +1791,12 @@ class MainActivity : ComponentActivity() {
                 try {
                     val cleaned = PhotoIo.readBytes(this, uri)?.let { PhotoIo.stripLossless(it) }
                     val saved = if (cleaned != null) {
-                        val mime = if (MetadataStripper.isPng(cleaned)) "image/png" else "image/jpeg"
+                        val mime = MetadataStripper.mimeOf(cleaned)
                         val name = "${prefix}_${batchId}_${index + 1}.${PhotoIo.extensionFor(mime)}"
                         store(name, mime) { it.write(cleaned) }
                             ?.also { lossless++ }
                     } else {
-                        // HEIC·WebP 등: 다시 인코딩하면서 메타데이터 제거
+                        // HEIC 등: 다시 인코딩(JPEG)하면서 메타데이터 제거
                         val bmp = PhotoIo.decodeUpright(this, uri, PhotoIo.maxDecodeDim())
                         try {
                             val isPng = bmp.hasAlpha()
@@ -1819,6 +1834,7 @@ class MainActivity : ComponentActivity() {
                     return@runOnUiThread
                 }
                 val done = lossless + reencoded
+                if (done > 0) recordSuccessfulSave(done)
                 val location = if (safUri != null) getString(R.string.run_batch_clean_6) else "Pictures/$folderName"
                 val summary = buildString {
                     append(getString(R.string.run_batch_clean_7, done))
@@ -1836,6 +1852,7 @@ class MainActivity : ComponentActivity() {
                     .title(getString(R.string.run_batch_clean_13))
                     .message(summary)
                     .primary(getString(R.string.show_privacy_info_dialog_5)) {}
+                    .onDismiss { if (done > 0) maybeRequestReview() }
                     .show()
             }
         }
@@ -2000,22 +2017,54 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        runOnUiThread { onImageSaved(savedUri, isQuickClean, mime) }
+        val report = savedUri?.let { buildSaveReport(it, mime, lossless = false) }
+        runOnUiThread { onImageSaved(savedUri, isQuickClean, mime, report) }
     }
 
-    private fun onImageSaved(savedUri: Uri?, isQuickClean: Boolean, mimeType: String) {
+    /** 저장된 파일을 다시 읽어 원본과 비교한 결과 (전후 비교 화면용) */
+    private data class SaveReport(
+        val before: PhotoMetadata?,
+        val after: PhotoMetadata?,
+        val beforeSize: Pair<Int, Int>?,
+        val afterSize: Pair<Int, Int>?,
+        val beforeBytes: Long,
+        val afterBytes: Long,
+        val lossless: Boolean
+    )
+
+    // 백그라운드에서 호출: 저장 결과 파일을 실제로 다시 열어 남은 메타데이터를 확인
+    private fun buildSaveReport(savedUri: Uri, mime: String, lossless: Boolean): SaveReport? {
+        return try {
+            val savedBytes = PhotoIo.readBytes(this, savedUri) ?: return null
+            val hasSource = sourceCacheFile.exists()
+            SaveReport(
+                before = currentMetadata,
+                after = readMetadata(java.io.ByteArrayInputStream(savedBytes), mime),
+                beforeSize = if (hasSource) PhotoIo.uprightSize(this, Uri.fromFile(sourceCacheFile)) else null,
+                afterSize = PhotoIo.uprightSize(this, savedUri),
+                beforeBytes = if (hasSource) sourceCacheFile.length() else 0L,
+                afterBytes = savedBytes.size.toLong(),
+                lossless = lossless
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun onImageSaved(savedUri: Uri?, isQuickClean: Boolean, mimeType: String, report: SaveReport? = null) {
         isSaving = false
         if (savedUri != null) {
             // UI를 메타데이터 제거 완료 상태로 갱신
             currentMetadata = currentMetadata?.copy(isAlreadyClean = true)
             updateExifUi(currentMetadata)
-            showSaveSuccessAndShareDialog(savedUri, isQuickClean, mimeType)
+            recordSuccessfulSave()
+            showSaveSuccessAndShareDialog(savedUri, isQuickClean, mimeType, report)
         } else {
             Toast.makeText(this, getString(R.string.on_image_saved_1), Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun showSaveSuccessAndShareDialog(savedUri: Uri, isQuickClean: Boolean, mimeType: String) {
+    private fun showSaveSuccessAndShareDialog(savedUri: Uri, isQuickClean: Boolean, mimeType: String, report: SaveReport?) {
         val title = if (isQuickClean) getString(R.string.show_save_success_and_share_dialog_1) else getString(R.string.show_save_success_and_share_dialog_2)
         val originalUri = currentImageUri
         val canDelete = canDeleteOriginal(originalUri)
@@ -2059,7 +2108,8 @@ class MainActivity : ComponentActivity() {
         }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(removedCard)
+            // 저장 파일을 다시 읽어 확인했으면 전후 비교표, 확인하지 못했으면 기존 안내 목록
+            addView(report?.let { createCompareCard(it) } ?: removedCard)
             addView(originalNote)
         }
 
@@ -2067,7 +2117,8 @@ class MainActivity : ComponentActivity() {
             .icon(R.drawable.ic_check, AppDialog.Tone.SUCCESS)
             .title(title)
             .message(getString(R.string.show_save_success_and_share_dialog_3).trim())
-            .content(content)
+            .content(content, scroll = true)
+            .onDismiss { maybeRequestReview() }
             .primary(getString(R.string.show_save_success_and_share_dialog_11)) {
                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                     type = mimeType
@@ -2094,6 +2145,140 @@ class MainActivity : ComponentActivity() {
             dialog.dismissButton(getString(R.string.show_privacy_info_dialog_5))
         }
         dialog.show()
+    }
+
+    // 원본과 저장된 파일을 항목별로 나란히 보여주는 전후 비교표
+    private fun createCompareCard(report: SaveReport): View {
+        val successColor = if (isNightMode) Color.parseColor("#34D399") else Color.parseColor("#10B981")
+        val dangerColor = if (isNightMode) Color.parseColor("#F87171") else Color.parseColor("#EF4444")
+        val none = getString(R.string.compare_none)
+
+        fun gps(m: PhotoMetadata?) = if (m?.hasGps == true && m.latitude != null && m.longitude != null) {
+            String.format(java.util.Locale.US, "%.4f, %.4f", m.latitude, m.longitude)
+        } else null
+        fun device(m: PhotoMetadata?) = m?.let { listOfNotNull(it.cameraMake, it.cameraModel).joinToString(" ").ifEmpty { null } }
+        fun size(p: Pair<Int, Int>?) = p?.let { "${it.first}×${it.second}" } ?: "-"
+        fun bytes(n: Long) = if (n > 0) android.text.format.Formatter.formatShortFileSize(this, n) else "-"
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = rounded(colorSegmentBg, 16)
+        }
+
+        fun cell(text: String, color: Int, weight: Float, bold: Boolean = false, checkIcon: Boolean = false) =
+            TextView(this).apply {
+                this.text = text
+                setTextColor(color)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                if (bold) typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER_VERTICAL
+                if (checkIcon) {
+                    setCompoundDrawablesRelative(tintedIcon(R.drawable.ic_check, color, 14), null, null, null)
+                    compoundDrawablePadding = dp(4)
+                }
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight)
+                    .apply { marginEnd = dp(6) }
+            }
+
+        fun row(
+            label: String, before: String, after: String, afterColor: Int,
+            beforeColor: Int = colorTextPrimary, cleared: Boolean = false, header: Boolean = false
+        ) {
+            card.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(if (header) 2 else 7), 0, dp(if (header) 6 else 7))
+                addView(cell(label, colorTextSecondary, 0.9f, bold = header))
+                addView(cell(before, beforeColor, 1.15f, bold = header))
+                addView(cell(after, afterColor, 1.15f, bold = true, checkIcon = cleared))
+                // 낭독기가 한 줄을 "항목: 원본 → 정리 후"로 읽도록 묶음
+                if (header) {
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                } else {
+                    contentDescription = "$label: $before → $after"
+                    isFocusable = true
+                }
+            })
+        }
+
+        // 개인정보 항목: 원본에 있었는데 사라졌으면 초록 체크, 남아 있으면 빨간색
+        fun privacyRow(labelRes: Int, before: String?, after: String?) {
+            val afterColor = when {
+                after != null -> dangerColor
+                before != null -> successColor
+                else -> colorTextSecondary
+            }
+            row(
+                getString(labelRes),
+                before ?: none,
+                after ?: if (before != null) getString(R.string.compare_removed) else none,
+                afterColor,
+                beforeColor = if (before != null) colorTextPrimary else colorTextSecondary,
+                cleared = before != null && after == null
+            )
+        }
+
+        row(
+            "", getString(R.string.compare_original), getString(R.string.compare_cleaned), colorPrimary,
+            beforeColor = colorTextSecondary, header = true
+        )
+        privacyRow(R.string.compare_location, gps(report.before), gps(report.after))
+        privacyRow(R.string.compare_device, device(report.before), device(report.after))
+        privacyRow(R.string.compare_date, report.before?.dateTime, report.after?.dateTime)
+
+        val beforeTags = report.before?.totalTagsCount ?: 0
+        val afterTags = report.after?.totalTagsCount ?: 0
+        row(
+            getString(R.string.compare_tags),
+            getString(R.string.compare_tag_count, beforeTags),
+            getString(R.string.compare_tag_count, afterTags),
+            if (afterTags == 0) successColor else dangerColor,
+            cleared = afterTags == 0 && beforeTags > 0
+        )
+        row(getString(R.string.compare_resolution), size(report.beforeSize), size(report.afterSize), colorTextPrimary)
+        row(getString(R.string.compare_file_size), bytes(report.beforeBytes), bytes(report.afterBytes), colorTextPrimary)
+
+        // 화질 처리 방식과 "실제 저장 파일로 확인했다"는 안내
+        val note = TextView(this).apply {
+            text = getString(
+                if (report.lossless) R.string.compare_note_lossless else R.string.compare_note_reencoded
+            ) + " " + getString(R.string.compare_note_verified)
+            setTextColor(colorTextSecondary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setLineSpacing(0f, 1.3f)
+            setPadding(dp(4), dp(10), dp(4), 0)
+        }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(card)
+            addView(note)
+        }
+    }
+
+    // ---------- 앱 안에서 리뷰 요청 ----------
+
+    private fun recordSuccessfulSave(count: Int = 1) {
+        prefs.edit().putInt(PREF_SAVE_COUNT, prefs.getInt(PREF_SAVE_COUNT, 0) + count).apply()
+    }
+
+    /**
+     * 저장을 몇 번 성공한 사용자에게만, 결과 창을 닫은 뒤 구글 플레이 리뷰 창을 띄움
+     * (실제로 보여줄지와 횟수 제한은 플레이 스토어가 정하므로 너무 자주 뜨지 않음)
+     */
+    private fun maybeRequestReview() {
+        if (prefs.getInt(PREF_SAVE_COUNT, 0) < REVIEW_MIN_SAVES) return
+        val now = System.currentTimeMillis()
+        if (now - prefs.getLong(PREF_REVIEW_ASKED_AT, 0L) < REVIEW_INTERVAL_MS) return
+        prefs.edit().putLong(PREF_REVIEW_ASKED_AT, now).apply()
+
+        val manager = ReviewManagerFactory.create(this)
+        manager.requestReviewFlow().addOnCompleteListener { request ->
+            if (request.isSuccessful && !isFinishing && !isDestroyed) {
+                manager.launchReviewFlow(this, request.result)
+            }
+        }
     }
 
     // 원본 삭제 가능 여부: 갤러리(MediaStore) 사진 또는 삭제를 지원하는 문서 URI

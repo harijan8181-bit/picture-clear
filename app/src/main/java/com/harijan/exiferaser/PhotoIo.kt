@@ -80,12 +80,34 @@ object PhotoIo {
         }
         val raw = openStream(context, uri)?.use {
             BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sampleSize })
-        } ?: throw IllegalStateException(context.getString(R.string.error_decode_failed))
+        } ?: throw IllegalStateException(context.getString(decodeErrorRes(context, uri)))
 
         val matrix = orientationMatrix(readOrientation(context, uri)) ?: return raw
         val upright = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
         if (upright != raw) raw.recycle()
         return upright
+    }
+
+    /** HEIC는 Android 9(API 28)부터 열 수 있으므로 그 이전 기기에는 따로 안내 */
+    private fun decodeErrorRes(context: Context, uri: Uri): Int {
+        val head = openStream(context, uri)?.use { s -> ByteArray(16).also { s.read(it) } }
+        return if (head != null && MetadataStripper.isHeif(head) && Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            R.string.error_heic_unsupported
+        } else {
+            R.string.error_decode_failed
+        }
+    }
+
+    /** 실제 파일의 가로×세로 (EXIF 회전을 반영해 화면에 보이는 방향 기준) */
+    fun uprightSize(context: Context, uri: Uri): Pair<Int, Int>? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        openStream(context, uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val swapped = readOrientation(context, uri) in setOf(
+            ExifInterface.ORIENTATION_TRANSPOSE, ExifInterface.ORIENTATION_ROTATE_90,
+            ExifInterface.ORIENTATION_TRANSVERSE, ExifInterface.ORIENTATION_ROTATE_270
+        )
+        return if (swapped) bounds.outHeight to bounds.outWidth else bounds.outWidth to bounds.outHeight
     }
 
     fun maxDecodeDim(): Int {
@@ -184,7 +206,11 @@ object PhotoIo {
         }
     }
 
-    fun extensionFor(mime: String) = if (mime == "image/png") "png" else "jpg"
+    fun extensionFor(mime: String) = when (mime) {
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        else -> "jpg"
+    }
 
     // ---------- 공유 전용 임시 파일 (갤러리에 사본을 남기지 않음) ----------
 

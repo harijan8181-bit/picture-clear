@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream
  *         색상 표현에 필요한 JFIF(APP0), ICC 프로필(APP2), Adobe(APP14)는 유지
  *         회전 정보는 다른 정보 없이 방향 태그 하나만 담은 최소 EXIF로 다시 기록
  * - PNG : 이미지·색상 표현에 필요한 청크만 남기고 텍스트/EXIF/시간 청크 제거
+ * - WebP: EXIF·XMP 청크를 빼고 VP8X 플래그를 고침 (회전 정보는 방향 태그 하나만 담은 EXIF로 다시 기록)
  * 화소 데이터는 한 바이트도 바뀌지 않으므로 화질과 해상도가 그대로 유지됨
  */
 object MetadataStripper {
@@ -16,12 +17,29 @@ object MetadataStripper {
     fun strip(bytes: ByteArray, orientation: Int = 1): ByteArray? = when {
         isJpeg(bytes) -> stripJpeg(bytes, orientation)
         isPng(bytes) -> stripPng(bytes)
+        isWebp(bytes) -> stripWebp(bytes, orientation)
         else -> null
+    }
+
+    /** 정리된 파일의 형식에 맞는 MIME 타입 */
+    fun mimeOf(bytes: ByteArray) = when {
+        isPng(bytes) -> "image/png"
+        isWebp(bytes) -> "image/webp"
+        else -> "image/jpeg"
     }
 
     fun isJpeg(b: ByteArray) = b.size > 4 && u(b[0]) == 0xFF && u(b[1]) == 0xD8
 
     fun isPng(b: ByteArray) = b.size > 8 && b.copyOfRange(0, 8).contentEquals(PNG_SIGNATURE)
+
+    fun isWebp(b: ByteArray) = b.size > 12 && startsWith(b, 0, 4, "RIFF") && startsWith(b, 8, 12, "WEBP")
+
+    /** HEIC/HEIF/AVIF (ISO 미디어 파일의 ftyp 상자로 판별) */
+    fun isHeif(b: ByteArray): Boolean {
+        if (b.size < 12 || !startsWith(b, 4, 8, "ftyp")) return false
+        val brand = String(b, 8, 4, Charsets.US_ASCII)
+        return brand in setOf("heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1", "avif", "avis")
+    }
 
     fun stripJpeg(b: ByteArray, orientation: Int = 1): ByteArray? {
         if (!isJpeg(b)) return null
@@ -83,16 +101,21 @@ object MetadataStripper {
 
     /** 방향(0x0112) 태그 하나만 담은 최소 EXIF APP1 세그먼트 */
     fun minimalOrientationApp1(orientation: Int): ByteArray {
-        val payload = byteArrayOf(
-            0x45, 0x78, 0x69, 0x66, 0x00, 0x00,             // "Exif\0\0"
+        val payload = byteArrayOf(0x45, 0x78, 0x69, 0x66, 0x00, 0x00) + // "Exif\0\0"
+            minimalOrientationTiff(orientation)
+        val len = payload.size + 2
+        return byteArrayOf(0xFF.toByte(), 0xE1.toByte(), (len shr 8).toByte(), len.toByte()) + payload
+    }
+
+    /** 방향 태그 하나만 담은 TIFF 구조 (JPEG APP1과 WebP EXIF 청크에 공통으로 사용) */
+    fun minimalOrientationTiff(orientation: Int): ByteArray {
+        return byteArrayOf(
             0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08, // 빅엔디언 TIFF 헤더, IFD0 오프셋 8
             0x00, 0x01,                                     // 항목 1개
             0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, // Orientation, SHORT, 1개
             0x00, orientation.toByte(), 0x00, 0x00,         // 값
             0x00, 0x00, 0x00, 0x00                          // 다음 IFD 없음
         )
-        val len = payload.size + 2
-        return byteArrayOf(0xFF.toByte(), 0xE1.toByte(), (len shr 8).toByte(), len.toByte()) + payload
     }
 
     fun stripPng(b: ByteArray): ByteArray? {
@@ -112,6 +135,63 @@ object MetadataStripper {
         }
         return null
     }
+
+    /**
+     * WebP(RIFF) 컨테이너에서 EXIF·XMP 청크 제거
+     * 회전이 필요한데 확장 헤더(VP8X)가 없는 단순 WebP는 방향을 기록할 곳이 없어 null (재인코딩으로 대체)
+     */
+    fun stripWebp(b: ByteArray, orientation: Int = 1): ByteArray? {
+        if (!isWebp(b)) return null
+        val riffEnd = minOf(8L + readLe32(b, 4), b.size.toLong()).toInt()
+        val keepOrientation = orientation in 2..8
+
+        val chunks = ArrayList<Pair<String, IntRange>>() // 청크 이름, 헤더 포함 전체 범위
+        var i = 12
+        while (i + 8 <= riffEnd) {
+            val size = readLe32(b, i + 4)
+            if (size < 0 || i + 8L + size > riffEnd) return null
+            val type = String(b, i, 4, Charsets.US_ASCII)
+            val end = i + 8 + size.toInt() + (size.toInt() and 1) // 홀수 크기면 채움 바이트 1개
+            chunks.add(type to (i until minOf(end, riffEnd)))
+            i = end
+        }
+        if (chunks.none { it.first == "VP8 " || it.first == "VP8L" || it.first == "ANMF" }) return null
+        val hasVp8x = chunks.any { it.first == "VP8X" }
+        if (keepOrientation && !hasVp8x) return null
+
+        val out = ByteArrayOutputStream(b.size)
+        out.write(ascii("RIFF")); out.write(ByteArray(4)); out.write(ascii("WEBP"))
+        for ((type, range) in chunks) {
+            if (type !in WEBP_KEEP_CHUNKS) continue
+            val chunk = b.copyOfRange(range.first, range.last + 1)
+            if (type == "VP8X" && chunk.size > 8) {
+                // 플래그: 0x08 = EXIF 있음, 0x04 = XMP 있음
+                var flags = chunk[8].toInt() and 0xFF and 0x08.inv() and 0x04.inv()
+                if (keepOrientation) flags = flags or 0x08
+                chunk[8] = flags.toByte()
+            }
+            out.write(chunk)
+        }
+        if (keepOrientation) {
+            val tiff = minimalOrientationTiff(orientation)
+            out.write(ascii("EXIF")); out.write(le32(tiff.size)); out.write(tiff)
+            if (tiff.size % 2 == 1) out.write(0)
+        }
+        val result = out.toByteArray()
+        le32(result.size - 8).copyInto(result, 4)
+        return result
+    }
+
+    // 이미지·애니메이션·색상 표현에 필요한 청크 (EXIF, XMP, 알 수 없는 청크는 제거)
+    private val WEBP_KEEP_CHUNKS = setOf("VP8X", "VP8 ", "VP8L", "ALPH", "ANIM", "ANMF", "ICCP")
+
+    private fun readLe32(b: ByteArray, at: Int): Long =
+        (u(b[at]).toLong()) or (u(b[at + 1]).toLong() shl 8) or
+                (u(b[at + 2]).toLong() shl 16) or (u(b[at + 3]).toLong() shl 24)
+
+    private fun le32(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())
+
+    private fun ascii(s: String) = s.toByteArray(Charsets.US_ASCII)
 
     private val PNG_SIGNATURE = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
 
