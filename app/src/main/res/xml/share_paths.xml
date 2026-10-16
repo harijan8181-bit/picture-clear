@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 정보를 지운 사진을 다른 앱에 공유할 때만 쓰는 임시 폴더 -->
+<paths>
+    <cache-path name="shared" path="shared/" />
+</paths>

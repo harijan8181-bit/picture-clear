@@ -1,6 +1,7 @@
-package com.example.myapplication009
+package com.harijan.exiferaser
 
 import android.app.AlertDialog
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
@@ -36,6 +37,9 @@ import com.google.android.gms.ads.MobileAds
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import org.json.JSONObject
+import java.io.File
+import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -44,6 +48,12 @@ import kotlin.concurrent.thread
  * 완벽하게 제거하고 안전하게 공유할 수 있는 프라이버시 보호 앱
  */
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val STATE_HAS_IMAGE = "has_image"
+        private const val STATE_IMAGE_URI = "image_uri"
+        private const val STATE_MIME = "mime"
+    }
 
     // 사진 EXIF 메타데이터 데이터 클래스 (상세 분석용)
     data class PhotoMetadata(
@@ -259,8 +269,43 @@ class MainActivity : ComponentActivity() {
 
         setContentView(root)
 
-        // 외부 앱(갤러리 등)에서 공유로 들어온 이미지 처리
-        handleIncomingIntent(intent)
+        if (savedInstanceState == null) {
+            // 새로 시작: 이전 실행의 임시 파일 정리 후 공유로 들어온 이미지 처리
+            sourceCacheFile.delete()
+            historyCacheFile.delete()
+            thread { PhotoIo.cleanOldSharedFiles(this) }
+            handleIncomingIntent(intent)
+        } else {
+            // 메모리 부족 등으로 앱이 종료됐다가 다시 열린 경우: 사진과 편집 내용 복원
+            restoreEditSession(savedInstanceState)
+        }
+    }
+
+    private val sourceCacheFile by lazy { File(cacheDir, "edit_source") }
+    private val historyCacheFile by lazy { File(cacheDir, "edit_history.json") }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (mosaicView.getBaseBitmap() == null || !sourceCacheFile.exists()) return
+        outState.putString(STATE_IMAGE_URI, currentImageUri?.toString())
+        outState.putString(STATE_MIME, currentMimeType)
+        outState.putBoolean(STATE_HAS_IMAGE, true)
+        try {
+            historyCacheFile.writeText(mosaicView.exportHistory().toString())
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun restoreEditSession(state: Bundle) {
+        if (!state.getBoolean(STATE_HAS_IMAGE) || !sourceCacheFile.exists()) return
+        currentImageUri = state.getString(STATE_IMAGE_URI)?.let(Uri::parse)
+        currentMimeType = state.getString(STATE_MIME)
+        val history = try {
+            JSONObject(historyCacheFile.readText())
+        } catch (_: Exception) {
+            JSONObject()
+        }
+        loadBitmapSafely(Uri.fromFile(sourceCacheFile), restoreHistory = history)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -271,17 +316,74 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
-        val action = intent.action
-        if (action == Intent.ACTION_SEND || action == Intent.ACTION_VIEW) {
-            val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(Intent.EXTRA_STREAM)
-            } ?: intent.data
+        when (intent.action) {
+            // 사진 앱에서 "열기"로 들어오면 바로 편집 화면
+            Intent.ACTION_VIEW -> intent.data?.let { loadBitmapSafely(it) }
 
-            uri?.let { loadBitmapSafely(it) }
+            // 갤러리에서 "공유"로 들어오면 바로 정리해서 다시 공유할지 먼저 물어봄
+            Intent.ACTION_SEND -> {
+                val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                } ?: intent.data
+                uri?.let { showIncomingShareDialog(listOf(it)) }
+            }
+
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val uris: List<Uri> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+                } ?: emptyList()
+                if (uris.isNotEmpty()) showIncomingShareDialog(uris)
+            }
         }
+    }
+
+    private fun showIncomingShareDialog(uris: List<Uri>) {
+        val single = uris.size == 1
+        val options = mutableListOf(
+            "⚡ 정보 지우고 바로 공유 (화질 그대로)",
+            "💾 정보 지우고 갤러리에 저장"
+        )
+        if (single) options.add("✏️ 얼굴·글자 가리기 (편집)")
+
+        dialogBuilder()
+            .setTitle(if (single) "공유받은 사진" else "공유받은 사진 ${uris.size}장")
+            .setItems(options.toTypedArray()) { _, which ->
+                when (which) {
+                    0 -> runBatchClean(uris, shareAfter = true)
+                    1 -> runBatchClean(uris, shareAfter = false)
+                    2 -> loadBitmapSafely(uris[0])
+                }
+            }
+            .setNegativeButton("취소", null)
+            .show()
+    }
+
+    /** 정리된 사진을 다른 앱(카톡, 당근 등)으로 공유 */
+    private fun shareImages(uris: List<Uri>) {
+        val intent = if (uris.size == 1) {
+            Intent(Intent.ACTION_SEND).apply {
+                type = contentResolver.getType(uris[0]) ?: "image/*"
+                putExtra(Intent.EXTRA_STREAM, uris[0])
+            }
+        } else {
+            Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "image/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            }
+        }.apply {
+            // 받는 앱이 임시 파일을 읽을 수 있도록 권한 부여
+            clipData = ClipData.newRawUri(null, uris[0]).also { clip ->
+                uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+            }
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, "정보를 지운 사진 공유"))
     }
 
     private fun initThemeColors() {
@@ -749,19 +851,33 @@ class MainActivity : ComponentActivity() {
     }
 
     // 사진 비트맵 로드 및 EXIF 메타데이터 정밀 분석
-    private fun loadBitmapSafely(uri: Uri) {
-        currentImageUri = uri
-        val mime = contentResolver.getType(uri) ?: when {
-            uri.path?.endsWith(".png", true) == true -> "image/png"
-            uri.path?.endsWith(".webp", true) == true -> "image/webp"
-            else -> "image/jpeg"
+    // restoreHistory가 있으면 앱 재시작 후 복원: 원본 대신 앱 내부에 복사해 둔 파일에서 다시 불러옴
+    private fun loadBitmapSafely(uri: Uri, restoreHistory: JSONObject? = null) {
+        val isRestore = restoreHistory != null
+        if (!isRestore) {
+            currentImageUri = uri
+            currentMimeType = contentResolver.getType(uri) ?: when {
+                uri.path?.endsWith(".png", true) == true -> "image/png"
+                uri.path?.endsWith(".webp", true) == true -> "image/webp"
+                else -> "image/jpeg"
+            }
         }
-        currentMimeType = mime
+        val mime = currentMimeType
 
-        Toast.makeText(this, "사진 및 메타데이터 정밀 분석 중...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, if (isRestore) "이전 작업을 복원하는 중..." else "사진 및 메타데이터 정밀 분석 중...", Toast.LENGTH_SHORT).show()
         thread {
             try {
-                val resolvedUri = PhotoIo.resolveOriginal(uri)
+                // 원본 파일을 앱 내부 캐시에 그대로 복사해 두고 이후 작업은 복사본으로 진행
+                // (앱이 종료됐다 복원되거나 원본 접근 권한이 사라져도 계속 작업 가능)
+                val resolvedUri = if (isRestore) {
+                    Uri.fromFile(sourceCacheFile)
+                } else {
+                    val bytes = PhotoIo.readBytes(this, PhotoIo.resolveOriginal(uri))
+                        ?: PhotoIo.readBytes(this, uri)
+                        ?: throw IllegalStateException("사진을 읽을 수 없습니다.")
+                    sourceCacheFile.writeBytes(bytes)
+                    Uri.fromFile(sourceCacheFile)
+                }
 
                 // 1. EXIF 메타데이터 정밀 분석
                 var metadata: PhotoMetadata? = null
@@ -860,6 +976,7 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     btnPickEmpty.visibility = View.GONE
                     mosaicView.setImage(finalBmp)
+                    restoreHistory?.let { mosaicView.restoreHistory(it) }
                     updateExifUi(currentMetadata)
                     updateUndoRedoButtons()
                 }
@@ -1047,9 +1164,10 @@ class MainActivity : ComponentActivity() {
         val sourceUri = currentImageUri
         thread {
             // 1순위: 원본 파일에서 메타데이터만 잘라내기 (재압축 없음 → 화질·해상도 그대로)
-            val cleaned = sourceUri
-                ?.let { PhotoIo.readBytes(this, it) }
-                ?.let { PhotoIo.stripLossless(it) }
+            // 불러올 때 복사해 둔 파일을 먼저 사용 (원본이 삭제됐거나 권한이 만료돼도 동작)
+            val sourceBytes = (if (sourceCacheFile.exists()) sourceCacheFile.readBytes() else null)
+                ?: sourceUri?.let { PhotoIo.readBytes(this, it) }
+            val cleaned = sourceBytes?.let { PhotoIo.stripLossless(it) }
 
             if (cleaned != null) {
                 val mime = if (MetadataStripper.isPng(cleaned)) "image/png" else "image/jpeg"
@@ -1135,7 +1253,7 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this, "${faces.size}개의 얼굴에 모자이크를 적용했습니다.", Toast.LENGTH_SHORT).show()
                     }
                     .addOnFailureListener { e ->
-                        Toast.makeText(this, "얼굴 인식 실패: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "얼굴 인식 실패: ${PrivacyScanner.friendlyError(e)}", Toast.LENGTH_SHORT).show()
                     }
                     .addOnCompleteListener {
                         detector.close()
@@ -1184,7 +1302,7 @@ class MainActivity : ComponentActivity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this, "개인정보 감지 실패: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "개인정보 감지 실패: ${PrivacyScanner.friendlyError(e)}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -1244,7 +1362,11 @@ class MainActivity : ComponentActivity() {
         pickMultipleMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
-    private fun runBatchClean(uris: List<Uri>) {
+    /**
+     * 여러 장의 메타데이터를 지워 저장
+     * @param shareAfter true면 갤러리에 남기지 않고 앱 임시 폴더에 만든 뒤 바로 공유 창을 띄움
+     */
+    private fun runBatchClean(uris: List<Uri>, shareAfter: Boolean = false) {
         val cancelled = AtomicBoolean(false)
         val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = uris.size
@@ -1269,7 +1391,7 @@ class MainActivity : ComponentActivity() {
             addView(tvProgress)
         }
         val progressDialog = dialogBuilder()
-            .setTitle("여러 장 메타데이터 제거 중")
+            .setTitle(if (shareAfter) "공유할 사진의 정보 지우는 중" else "여러 장 메타데이터 제거 중")
             .setView(layout)
             .setCancelable(false)
             .setNegativeButton("중지") { _, _ -> cancelled.set(true) }
@@ -1279,19 +1401,25 @@ class MainActivity : ComponentActivity() {
         val folderName = targetFolderName
         val safUri = targetFolderUriString
         val batchId = System.currentTimeMillis()
+        val prefix = if (shareAfter) "IMG" else "CLEAN"
+
+        fun store(name: String, mime: String, write: (OutputStream) -> Unit): Uri? =
+            if (shareAfter) PhotoIo.saveForSharing(this, name, write)
+            else PhotoIo.save(this, name, mime, folderName, safUri, write)
 
         thread {
             var lossless = 0
             var reencoded = 0
             var failed = 0
+            val outputs = ArrayList<Uri>()
             for ((index, uri) in uris.withIndex()) {
                 if (cancelled.get()) break
                 try {
                     val cleaned = PhotoIo.readBytes(this, uri)?.let { PhotoIo.stripLossless(it) }
                     val saved = if (cleaned != null) {
                         val mime = if (MetadataStripper.isPng(cleaned)) "image/png" else "image/jpeg"
-                        val name = "CLEAN_${batchId}_${index + 1}.${PhotoIo.extensionFor(mime)}"
-                        PhotoIo.save(this, name, mime, folderName, safUri) { it.write(cleaned) }
+                        val name = "${prefix}_${batchId}_${index + 1}.${PhotoIo.extensionFor(mime)}"
+                        store(name, mime) { it.write(cleaned) }
                             ?.also { lossless++ }
                     } else {
                         // HEIC·WebP 등: 다시 인코딩하면서 메타데이터 제거
@@ -1299,8 +1427,8 @@ class MainActivity : ComponentActivity() {
                         try {
                             val isPng = bmp.hasAlpha()
                             val mime = if (isPng) "image/png" else "image/jpeg"
-                            val name = "CLEAN_${batchId}_${index + 1}.${PhotoIo.extensionFor(mime)}"
-                            PhotoIo.save(this, name, mime, folderName, safUri) { out ->
+                            val name = "${prefix}_${batchId}_${index + 1}.${PhotoIo.extensionFor(mime)}"
+                            store(name, mime) { out ->
                                 bmp.compress(
                                     if (isPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
                                     if (isPng) 100 else 95,
@@ -1311,7 +1439,7 @@ class MainActivity : ComponentActivity() {
                             bmp.recycle()
                         }
                     }
-                    if (saved == null) failed++
+                    if (saved == null) failed++ else outputs.add(saved)
                 } catch (_: Throwable) {
                     failed++
                 }
@@ -1324,6 +1452,13 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 if (progressDialog.isShowing) progressDialog.dismiss()
+                if (shareAfter) {
+                    if (failed > 0) {
+                        Toast.makeText(this, "${failed}장은 처리하지 못해 공유에서 빠졌습니다.", Toast.LENGTH_LONG).show()
+                    }
+                    if (outputs.isNotEmpty() && !cancelled.get()) shareImages(outputs)
+                    return@runOnUiThread
+                }
                 val done = lossless + reencoded
                 val location = if (safUri != null) "지정한 폴더" else "Pictures/$folderName"
                 val summary = buildString {
@@ -1580,6 +1715,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (::adView.isInitialized) adView.destroy()
+        if (isFinishing) {
+            // 사용자가 앱을 완전히 닫으면 원본 복사본(위치정보 포함)을 바로 삭제
+            sourceCacheFile.delete()
+            historyCacheFile.delete()
+        }
         super.onDestroy()
     }
 }

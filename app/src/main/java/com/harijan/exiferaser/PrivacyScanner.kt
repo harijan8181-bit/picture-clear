@@ -1,9 +1,10 @@
-package com.example.myapplication009
+package com.harijan.exiferaser
 
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.graphics.RectF
 import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.common.MlKitException
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -23,6 +24,19 @@ object PrivacyScanner {
 
     // 작은 글씨도 읽히도록 OCR은 비교적 큰 해상도로 분석
     private const val MAX_ANALYSIS_DIM = 3072f
+
+    /**
+     * AI 모델은 Google Play 서비스가 앱 설치 직후 내려받음 → 아직 받는 중이면 안내 문구로 변환
+     * (얼굴 인식 등 다른 ML Kit 기능에서도 공용 사용)
+     */
+    fun friendlyError(e: Throwable?): String {
+        val mlKit = generateSequence(e) { it.cause }.filterIsInstance<MlKitException>().firstOrNull()
+        return if (mlKit?.errorCode == MlKitException.UNAVAILABLE) {
+            "AI 모델을 내려받는 중입니다. 인터넷에 연결된 상태로 잠시 후 다시 시도해주세요."
+        } else {
+            e?.localizedMessage ?: "알 수 없는 오류"
+        }
+    }
 
     /**
      * 백그라운드 스레드에서 호출해야 함 (결과가 나올 때까지 대기)

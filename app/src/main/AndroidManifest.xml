@@ -21,10 +21,10 @@
             android:name="com.google.android.gms.ads.APPLICATION_ID"
             android:value="ca-app-pub-3940256099942544~3347511713"/>
 
-        <!-- ML Kit 얼굴인식 AI 모델 자동 다운로드 선언 (필수) -->
+        <!-- ML Kit AI 모델(얼굴·한글 글자·바코드)을 설치 시 Play 서비스로 미리 내려받음 (앱 용량 절감) -->
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="face" />
+            android:value="face,ocr_korean,barcode" />
 
         <activity
             android:name=".MainActivity"
@@ -41,11 +41,27 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
             <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+
+        <!-- 정보를 지운 사진을 갤러리에 남기지 않고 바로 다른 앱으로 공유하기 위한 임시 파일 제공자 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/share_paths" />
+        </provider>
     </application>
 
 </manifest>

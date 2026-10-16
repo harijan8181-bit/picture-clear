@@ -1,6 +1,6 @@
-package com.example.myapplication009
+package com.harijan.exiferaser
 
-import com.example.myapplication009.SensitiveTextMatcher.Category
+import com.harijan.exiferaser.SensitiveTextMatcher.Category
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

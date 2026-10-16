@@ -1,4 +1,4 @@
-package com.example.myapplication009
+package com.harijan.exiferaser
 
 /**
  * OCR로 읽은 한 줄의 단어 목록에서 개인정보를 찾아, 가려야 할 단어 위치를 돌려주는 순수 로직

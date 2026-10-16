@@ -22,6 +22,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "My Application (009)) 사진정보 지우개"
+rootProject.name = "PhotoInfoEraser"
 include(":app")
  

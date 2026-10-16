@@ -1,4 +1,4 @@
-package com.example.myapplication009
+package com.harijan.exiferaser
 
 import android.content.ContentValues
 import android.content.Context
@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -184,4 +185,28 @@ object PhotoIo {
     }
 
     fun extensionFor(mime: String) = if (mime == "image/png") "png" else "jpg"
+
+    // ---------- 공유 전용 임시 파일 (갤러리에 사본을 남기지 않음) ----------
+
+    private const val SHARE_DIR = "shared"
+    private const val SHARE_FILE_MAX_AGE_MS = 60 * 60 * 1000L
+
+    private fun shareDir(context: Context) = File(context.cacheDir, SHARE_DIR).apply { mkdirs() }
+
+    /** 앱 임시 폴더에 저장하고 다른 앱에 넘길 수 있는 FileProvider URI 반환 */
+    fun saveForSharing(context: Context, filename: String, write: (OutputStream) -> Unit): Uri? = try {
+        val file = File(shareDir(context), filename)
+        FileOutputStream(file).use(write)
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    } catch (_: Exception) {
+        null
+    }
+
+    /** 받는 앱이 다 읽었을 만큼 시간이 지난 공유용 임시 파일 정리 */
+    fun cleanOldSharedFiles(context: Context) {
+        val now = System.currentTimeMillis()
+        shareDir(context).listFiles()?.forEach {
+            if (now - it.lastModified() > SHARE_FILE_MAX_AGE_MS) it.delete()
+        }
+    }
 }

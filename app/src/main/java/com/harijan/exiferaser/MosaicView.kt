@@ -1,4 +1,4 @@
-package com.example.myapplication009
+package com.harijan.exiferaser
 
 import android.animation.ValueAnimator
 import android.content.Context
@@ -16,6 +16,8 @@ import android.os.Build
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * 모자이크 캔버스 뷰
@@ -32,12 +34,27 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
         // 얼굴 긴 변을 몇 칸의 모자이크 블록으로 나눌지 (작을수록 강하게 가려짐)
         private const val FACE_BLOCKS = 8
 
-        // 브러시 모자이크 블록 크기 = 사진 크기 × 이 비율의 역수 (약 28px 블록)
-        private const val BRUSH_MOSAIC_SCALE = 0.035f
+        // 브러시 모자이크 블록 크기 = 브러시 굵기 ÷ 이 값
+        // (굵은 브러시로 큰 글씨를 덮어도 블록이 같이 커져서 읽을 수 없게 됨)
+        private const val BRUSH_BLOCKS = 4f
+        private const val MIN_BLOCK_PX = 12f
     }
 
     sealed class Action {
-        data class Stroke(val path: Path, val width: Float) : Action()
+        // points: x, y 좌표가 번갈아 들어간 배열 (상태 저장·복원용)
+        // block: 이 획의 모자이크 블록 크기(이미지 픽셀)
+        class Stroke(val points: FloatArray, val width: Float, val block: Float) : Action() {
+            val path: Path by lazy {
+                Path().apply {
+                    if (points.size >= 2) moveTo(points[0], points[1])
+                    var i = 2
+                    while (i + 1 < points.size) {
+                        lineTo(points[i], points[i + 1])
+                        i += 2
+                    }
+                }
+            }
+        }
         data class Box(val rect: RectF, val color: Int) : Action()
         // pixels: 얼굴 영역을 축소한 저해상도 비트맵 (얼굴 크기 기준 블록 모자이크)
         data class FaceMosaic(val rect: RectF, val pixels: Bitmap) : Action()
@@ -51,9 +68,10 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
 
     private var baseBitmap: Bitmap? = null
 
-    // 사진을 아주 작게 줄인 비트맵. 확대해서 그릴 때 필터링을 끄면 모자이크 블록이 됨
+    // 블록 크기별로 사진을 아주 작게 줄인 비트맵의 셰이더. 확대해서 그릴 때 필터링을 끄면 모자이크 블록이 됨
     // (원본 크기 픽셀화 비트맵을 따로 만들지 않아 메모리를 크게 아낌)
-    private var lowResBitmap: Bitmap? = null
+    private val mosaicShaders = mutableMapOf<Int, Pair<Bitmap, BitmapShader>>()
+    private val currentPoints = ArrayList<Float>()
 
     // 실행 취소 / 다시 실행 스택
     private val actionList = mutableListOf<Action>()
@@ -78,6 +96,7 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
 
     // 자동 감지 미리보기 (가리기 전 확인용)
     private var previewRects: List<RectF> = emptyList()
+    private var previewDashScale = 0f
     private val previewFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.argb(70, 239, 68, 68)
@@ -179,24 +198,10 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
         userTransformMatrix.reset()
         currentCumulativeScale = 1.0f
 
-        // 이전 저해상도 비트맵 안전 정리
-        lowResBitmap?.let { if (!it.isRecycled) it.recycle() }
+        // 이전 사진의 저해상도 비트맵 안전 정리
+        mosaicShaders.values.forEach { (bmp, _) -> if (!bmp.isRecycled) bmp.recycle() }
+        mosaicShaders.clear()
 
-        val w = (bitmap.width * BRUSH_MOSAIC_SCALE).toInt().coerceAtLeast(1)
-        val h = (bitmap.height * BRUSH_MOSAIC_SCALE).toInt().coerceAtLeast(1)
-        val lowRes = Bitmap.createScaledBitmap(bitmap, w, h, false)
-        this.lowResBitmap = lowRes
-
-        // 작은 비트맵을 원본 크기로 늘려서 칠하는 셰이더 (최근접 보간 → 블록 모자이크)
-        val shader = BitmapShader(lowRes, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
-            setLocalMatrix(Matrix().apply {
-                setScale(bitmap.width / w.toFloat(), bitmap.height / h.toFloat())
-            })
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                filterMode = BitmapShader.FILTER_MODE_NEAREST
-            }
-        }
-        mosaicStrokePaint.shader = shader
         baseBrushWidth = (bitmap.width * 0.06f).coerceAtLeast(35f)
 
         updateBaseMatrix()
@@ -204,27 +209,103 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
         onHistoryChanged?.invoke()
     }
 
-    fun addFaceMosaics(rects: List<RectF>) {
-        val bmp = baseBitmap ?: return
-        if (rects.isEmpty()) return
-        val faces = rects.map { rect ->
-            val left = rect.left.toInt().coerceIn(0, bmp.width - 1)
-            val top = rect.top.toInt().coerceIn(0, bmp.height - 1)
-            val w = (rect.right.toInt() - left).coerceIn(1, bmp.width - left)
-            val h = (rect.bottom.toInt() - top).coerceIn(1, bmp.height - top)
+    private fun blockFor(brushWidth: Float) = maxOf(brushWidth / BRUSH_BLOCKS, MIN_BLOCK_PX)
 
-            // 얼굴 긴 변 기준 약 FACE_BLOCKS칸으로 나눔 → 얼굴이 아무리 커도 알아볼 수 없음
-            val blockSize = (maxOf(w, h) / FACE_BLOCKS.toFloat()).coerceAtLeast(1f)
-            val lowW = (w / blockSize).toInt().coerceAtLeast(1)
-            val lowH = (h / blockSize).toInt().coerceAtLeast(1)
+    /** 블록 크기에 맞는 모자이크 셰이더 (블록 크기별로 한 번만 생성) */
+    private fun shaderFor(block: Float): BitmapShader? {
+        val bmp = baseBitmap ?: return null
+        val key = block.toInt().coerceAtLeast(1)
+        mosaicShaders[key]?.let { return it.second }
 
-            val crop = Bitmap.createBitmap(bmp, left, top, w, h)
-            val pixels = Bitmap.createScaledBitmap(crop, lowW, lowH, true)
-            if (crop != pixels && crop != bmp) crop.recycle()
-
-            Action.FaceMosaic(RectF(left.toFloat(), top.toFloat(), (left + w).toFloat(), (top + h).toFloat()), pixels)
+        val w = (bmp.width / key.toFloat()).toInt().coerceAtLeast(1)
+        val h = (bmp.height / key.toFloat()).toInt().coerceAtLeast(1)
+        val lowRes = Bitmap.createScaledBitmap(bmp, w, h, true)
+        // 작은 비트맵을 원본 크기로 늘려서 칠하는 셰이더 (최근접 보간 → 블록 모자이크)
+        val shader = BitmapShader(lowRes, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+            setLocalMatrix(Matrix().apply { setScale(bmp.width / w.toFloat(), bmp.height / h.toFloat()) })
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                filterMode = BitmapShader.FILTER_MODE_NEAREST
+            }
         }
+        mosaicShaders[key] = lowRes to shader
+        return shader
+    }
+
+    private fun makeFaceMosaic(rect: RectF): Action.FaceMosaic? {
+        val bmp = baseBitmap ?: return null
+        val left = rect.left.toInt().coerceIn(0, bmp.width - 1)
+        val top = rect.top.toInt().coerceIn(0, bmp.height - 1)
+        val w = (rect.right.toInt() - left).coerceIn(1, bmp.width - left)
+        val h = (rect.bottom.toInt() - top).coerceIn(1, bmp.height - top)
+
+        // 얼굴 긴 변 기준 약 FACE_BLOCKS칸으로 나눔 → 얼굴이 아무리 커도 알아볼 수 없음
+        val blockSize = (maxOf(w, h) / FACE_BLOCKS.toFloat()).coerceAtLeast(1f)
+        val lowW = (w / blockSize).toInt().coerceAtLeast(1)
+        val lowH = (h / blockSize).toInt().coerceAtLeast(1)
+
+        val crop = Bitmap.createBitmap(bmp, left, top, w, h)
+        val pixels = Bitmap.createScaledBitmap(crop, lowW, lowH, true)
+        if (crop != pixels && crop != bmp) crop.recycle()
+
+        return Action.FaceMosaic(RectF(left.toFloat(), top.toFloat(), (left + w).toFloat(), (top + h).toFloat()), pixels)
+    }
+
+    fun addFaceMosaics(rects: List<RectF>) {
+        if (baseBitmap == null || rects.isEmpty()) return
+        val faces = rects.mapNotNull { makeFaceMosaic(it) }
+        if (faces.isEmpty()) return
         pushAction(if (faces.size == 1) faces[0] else Action.Group(faces))
+    }
+
+    // ---------- 편집 기록 저장/복원 (앱이 메모리 부족으로 종료돼도 작업 유지) ----------
+
+    fun exportHistory(): JSONObject = JSONObject().apply {
+        put("actions", JSONArray().apply { actionList.forEach { put(actionToJson(it)) } })
+        put("redo", JSONArray().apply { redoList.forEach { put(actionToJson(it)) } })
+    }
+
+    /** setImage 이후에 호출 */
+    fun restoreHistory(json: JSONObject) {
+        actionList.clear()
+        redoList.clear()
+        json.optJSONArray("actions")?.let { arr -> for (i in 0 until arr.length()) actionFromJson(arr.getJSONObject(i))?.let(actionList::add) }
+        json.optJSONArray("redo")?.let { arr -> for (i in 0 until arr.length()) actionFromJson(arr.getJSONObject(i))?.let(redoList::add) }
+        invalidate()
+        onHistoryChanged?.invoke()
+    }
+
+    private fun rectToJson(r: RectF) = JSONArray().apply { put(r.left.toDouble()); put(r.top.toDouble()); put(r.right.toDouble()); put(r.bottom.toDouble()) }
+
+    private fun rectFromJson(a: JSONArray) =
+        RectF(a.getDouble(0).toFloat(), a.getDouble(1).toFloat(), a.getDouble(2).toFloat(), a.getDouble(3).toFloat())
+
+    private fun actionToJson(action: Action): JSONObject = when (action) {
+        is Action.Stroke -> JSONObject().apply {
+            put("t", "stroke")
+            put("w", action.width.toDouble())
+            put("b", action.block.toDouble())
+            put("p", JSONArray().apply { action.points.forEach { put(it.toDouble()) } })
+        }
+        is Action.Box -> JSONObject().apply { put("t", "box"); put("r", rectToJson(action.rect)); put("c", action.color) }
+        is Action.FaceMosaic -> JSONObject().apply { put("t", "face"); put("r", rectToJson(action.rect)) }
+        is Action.Group -> JSONObject().apply {
+            put("t", "group")
+            put("a", JSONArray().apply { action.actions.forEach { put(actionToJson(it)) } })
+        }
+    }
+
+    private fun actionFromJson(o: JSONObject): Action? = when (o.optString("t")) {
+        "stroke" -> {
+            val p = o.getJSONArray("p")
+            Action.Stroke(FloatArray(p.length()) { p.getDouble(it).toFloat() }, o.getDouble("w").toFloat(), o.getDouble("b").toFloat())
+        }
+        "box" -> Action.Box(rectFromJson(o.getJSONArray("r")), o.getInt("c"))
+        "face" -> makeFaceMosaic(rectFromJson(o.getJSONArray("r")))
+        "group" -> {
+            val a = o.getJSONArray("a")
+            Action.Group((0 until a.length()).mapNotNull { actionFromJson(a.getJSONObject(it)) })
+        }
+        else -> null
     }
 
     /** 자동 감지된 영역들을 한 번에 박스로 가림 (실행 취소 한 번에 전부 취소) */
@@ -334,6 +415,7 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
     private fun drawAction(canvas: Canvas, action: Action) {
         when (action) {
             is Action.Stroke -> {
+                mosaicStrokePaint.shader = shaderFor(action.block)
                 mosaicStrokePaint.strokeWidth = action.width
                 canvas.drawPath(action.path, mosaicStrokePaint)
             }
@@ -365,7 +447,9 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
         for (action in actionList) drawAction(canvas, action)
 
         currentPath?.let {
-            mosaicStrokePaint.strokeWidth = baseBrushWidth * brushScaleMultiplier
+            val brushWidth = baseBrushWidth * brushScaleMultiplier
+            mosaicStrokePaint.shader = shaderFor(blockFor(brushWidth))
+            mosaicStrokePaint.strokeWidth = brushWidth
             canvas.drawPath(it, mosaicStrokePaint)
         }
         currentRect?.let {
@@ -377,8 +461,12 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
             // 화면 배율과 무관하게 일정한 두께로 보이도록 보정
             val scale = displayScale()
             val density = resources.displayMetrics.density
-            previewStrokePaint.strokeWidth = 2f * density / scale
-            previewStrokePaint.pathEffect = DashPathEffect(floatArrayOf(6f * density / scale, 4f * density / scale), 0f)
+            if (scale != previewDashScale) {
+                // 배율이 바뀔 때만 점선 효과를 새로 만듦 (매 프레임 객체 생성 방지)
+                previewDashScale = scale
+                previewStrokePaint.strokeWidth = 2f * density / scale
+                previewStrokePaint.pathEffect = DashPathEffect(floatArrayOf(6f * density / scale, 4f * density / scale), 0f)
+            }
             for (r in previewRects) {
                 canvas.drawRect(r, previewFillPaint)
                 canvas.drawRect(r, previewStrokePaint)
@@ -468,6 +556,9 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
                 startY = y
                 if (mode == Mode.MOSAIC) {
                     currentPath = Path().apply { moveTo(x, y) }
+                    currentPoints.clear()
+                    currentPoints.add(x)
+                    currentPoints.add(y)
                 } else {
                     currentRect = RectF(x, y, x, y)
                 }
@@ -477,6 +568,8 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
             MotionEvent.ACTION_MOVE -> {
                 if (mode == Mode.MOSAIC) {
                     currentPath?.lineTo(x, y)
+                    currentPoints.add(x)
+                    currentPoints.add(y)
                 } else {
                     currentRect?.set(minOf(startX, x), minOf(startY, y), maxOf(startX, x), maxOf(startY, y))
                 }
@@ -485,13 +578,24 @@ class MosaicView(context: Context, isNightMode: Boolean) : View(context) {
             }
             MotionEvent.ACTION_UP -> {
                 if (mode == Mode.MOSAIC) {
-                    currentPath?.let { path ->
+                    if (currentPath != null) {
+                        currentPoints.add(x)
+                        currentPoints.add(y)
                         if (startX == x && startY == y) {
-                            path.lineTo(x + 0.1f, y + 0.1f)
+                            // 탭 한 번에도 점이 찍히도록 아주 짧은 선을 추가
+                            currentPoints.add(x + 0.1f)
+                            currentPoints.add(y + 0.1f)
                         }
-                        pushAction(Action.Stroke(path, currentEffectiveBrushWidth))
+                        pushAction(
+                            Action.Stroke(
+                                currentPoints.toFloatArray(),
+                                currentEffectiveBrushWidth,
+                                blockFor(currentEffectiveBrushWidth)
+                            )
+                        )
                     }
                     currentPath = null
+                    currentPoints.clear()
                 } else {
                     val boxColor = if (mode == Mode.WHITE_BOX) Color.WHITE else Color.BLACK
                     currentRect?.let { r ->

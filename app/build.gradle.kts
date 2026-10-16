@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.myapplication009"
+    namespace = "com.harijan.exiferaser"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.myapplication009"
+        applicationId = "com.harijan.exiferaser"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
