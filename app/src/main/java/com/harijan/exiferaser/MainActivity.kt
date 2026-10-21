@@ -1671,6 +1671,7 @@ class MainActivity : ComponentActivity() {
 
     private fun categoryLabelRes(category: SensitiveTextMatcher.Category): Int = when (category) {
         SensitiveTextMatcher.Category.RRN -> R.string.category_rrn
+        SensitiveTextMatcher.Category.SSN -> R.string.category_ssn
         SensitiveTextMatcher.Category.PHONE -> R.string.category_phone
         SensitiveTextMatcher.Category.EMAIL -> R.string.category_email
         SensitiveTextMatcher.Category.ACCOUNT -> R.string.category_account

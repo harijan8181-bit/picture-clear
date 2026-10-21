@@ -167,6 +167,7 @@
     <string name="brush_medium">중</string>
     <string name="brush_large">대</string>
     <string name="category_rrn">주민등록번호·외국인등록번호</string>
+    <string name="category_ssn">미국 사회보장번호(SSN)</string>
     <string name="category_phone">전화번호</string>
     <string name="category_email">이메일</string>
     <string name="category_account">계좌·카드번호</string>

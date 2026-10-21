@@ -168,6 +168,7 @@
     <string name="brush_medium">M</string>
     <string name="brush_large">L</string>
     <string name="category_rrn">Korean resident / alien registration no.</string>
+    <string name="category_ssn">Social Security number</string>
     <string name="category_phone">Phone number</string>
     <string name="category_email">Email</string>
     <string name="category_account">Bank account / card number</string>

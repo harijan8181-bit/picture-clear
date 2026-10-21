@@ -70,4 +70,49 @@ class SensitiveTextMatcherTest {
         assertTrue(categories("가격 25,000원 2024.10.16").isEmpty())
         assertTrue(categories("3호선 환승").isEmpty())
     }
+
+    // ---------- 미국 형식 ----------
+
+    @Test
+    fun usSocialSecurityNumber() {
+        assertEquals(listOf(Category.SSN), categories("SSN# 123-45-6789"))
+        assertEquals(listOf(Category.SSN), categories("123 45 6789"))
+        // 발급되지 않는 번호대(000, 666, 9xx)는 제외
+        assertTrue(categories("000-12-3456").isEmpty())
+    }
+
+    @Test
+    fun usPhoneNumbers() {
+        assertEquals(listOf(Category.PHONE), categories("Call (212) 555-1234 today"))
+        assertEquals(listOf(Category.PHONE), categories("212-555-1234"))
+        assertEquals(listOf(Category.PHONE), categories("+1 415.555.0198"))
+        // 한국 번호는 그대로 한국 형식으로 감지
+        assertEquals(listOf(Category.PHONE), categories("010-1234-5678"))
+    }
+
+    @Test
+    fun usTrackingNumbers() {
+        assertEquals(listOf(Category.LONG_NUMBER), categories("1Z999AA10123456784"))
+        assertEquals(listOf(Category.LONG_NUMBER), categories("9400 1000 0000 0000 0000 00"))
+        assertEquals(listOf(Category.LONG_NUMBER), categories("9261290100130431234567"))
+    }
+
+    @Test
+    fun usAddressesAndLabels() {
+        assertEquals(listOf(Category.ADDRESS), categories("1600 Pennsylvania Ave NW"))
+        assertEquals(listOf(Category.ADDRESS), categories("4500 N Lake Shore Dr."))
+        assertEquals(listOf(Category.ADDRESS), categories("Apt 4B"))
+        assertEquals(listOf(Category.ADDRESS), categories("Springfield, IL 62704"))
+        assertEquals(listOf(Category.ADDRESS), categories("PO Box 123"))
+        assertEquals(listOf(Category.LABELED_LINE), categories("SHIP TO John Smith"))
+        assertEquals(listOf(Category.LABELED_LINE), categories("Name: Jane Doe"))
+    }
+
+    @Test
+    fun usOrdinaryTextIsIgnored() {
+        assertTrue(categories("Meet me at the station at 5").isEmpty())
+        assertTrue(categories("Total 25.00 on 10/16/2026").isEmpty())
+        assertTrue(categories("Our name is on the door").isEmpty())
+        assertTrue(categories("Open 24 hours, 7 days").isEmpty())
+    }
 }
