@@ -1,6 +1,6 @@
-package com.harijan.exiferaser
+package com.yeoncompany.photoinfoeraser
 
-import com.harijan.exiferaser.SensitiveTextMatcher.Category
+import com.yeoncompany.photoinfoeraser.SensitiveTextMatcher.Category
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

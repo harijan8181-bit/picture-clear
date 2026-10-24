@@ -1,4 +1,4 @@
-package com.harijan.exiferaser
+package com.yeoncompany.photoinfoeraser
 
 import org.junit.Test
 

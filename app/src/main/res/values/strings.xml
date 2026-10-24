@@ -181,7 +181,7 @@
     <string name="error_decode_failed">Couldn\'t decode the image.</string>
     <string name="error_heic_unsupported">HEIC photos can\'t be opened on this phone (Android 8). Shoot in JPEG or convert the photo to JPEG first.</string>
     <string name="empty_title">Erase personal info\nfrom your photos</string>
-    <string name="empty_subtitle">From location and device data to faces and shipping labels,\neverything is processed on your device</string>
+    <string name="empty_subtitle">From location and device data to faces and shipping labels — everything is processed on your device</string>
     <string name="empty_batch">Clean many photos at once</string>
     <string name="feature_location">Remove location</string>
     <string name="feature_face">Blur faces</string>

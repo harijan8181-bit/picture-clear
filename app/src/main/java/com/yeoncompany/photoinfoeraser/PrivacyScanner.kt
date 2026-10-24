@@ -1,4 +1,4 @@
-package com.harijan.exiferaser
+package com.yeoncompany.photoinfoeraser
 
 import android.content.Context
 import android.graphics.Bitmap

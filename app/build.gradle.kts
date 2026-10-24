@@ -16,11 +16,11 @@ val testAdmobAppId = "ca-app-pub-3940256099942544~3347511713"
 val testAdmobBannerId = "ca-app-pub-3940256099942544/6300978111"
 
 android {
-    namespace = "com.harijan.exiferaser"
+    namespace = "com.yeoncompany.photoinfoeraser"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.harijan.exiferaser"
+        applicationId = "com.yeoncompany.photoinfoeraser"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

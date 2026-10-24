@@ -1,4 +1,4 @@
-package com.harijan.exiferaser
+package com.yeoncompany.photoinfoeraser
 
 import android.animation.ValueAnimator
 import android.content.Context
