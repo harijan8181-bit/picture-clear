@@ -61,7 +61,7 @@ If this policy changes, the updated policy and its effective date will be posted
 
 ### 8. Contact
 
-Privacy questions: [Enter your contact email]
+Privacy questions: contact@yeoncompany.com
 
 ---
 
@@ -117,4 +117,4 @@ Google 개인정보처리방침: https://policies.google.com/privacy
 
 ### 8. 문의
 
-개인정보 관련 문의: [문의 이메일을 입력하세요]
+개인정보 관련 문의: contact@yeoncompany.com
