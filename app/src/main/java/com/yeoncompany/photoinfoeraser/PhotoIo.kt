@@ -150,18 +150,21 @@ object PhotoIo {
         val resolver = context.contentResolver
 
         if (safTreeUri != null) {
+            var newFileUri: Uri? = null
             try {
                 val treeUri = Uri.parse(safTreeUri)
                 val docUri = DocumentsContract.buildDocumentUriUsingTree(
                     treeUri, DocumentsContract.getTreeDocumentId(treeUri)
                 )
-                val newFileUri = DocumentsContract.createDocument(resolver, docUri, mime, filename)
+                newFileUri = DocumentsContract.createDocument(resolver, docUri, mime, filename)
                 if (newFileUri != null) {
-                    resolver.openOutputStream(newFileUri)?.use(write)
+                    // 스트림을 열지 못하면 아무것도 쓰지 못한 것이므로 실패로 처리
+                    resolver.openOutputStream(newFileUri)?.use(write) ?: throw IllegalStateException()
                     return newFileUri
                 }
             } catch (_: Exception) {
-                // SAF 실패 시 MediaStore로 폴백
+                // 만들다 만 빈 파일을 지우고 MediaStore로 폴백
+                newFileUri?.let { runCatching { DocumentsContract.deleteDocument(resolver, it) } }
             }
         }
 
@@ -187,12 +190,13 @@ object PhotoIo {
         }
 
         // Android 9 이하 (SDK 26~28) 레거시 스토리지
+        var targetFile: File? = null
         return try {
             @Suppress("DEPRECATION")
             val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
             val targetDir = File(picturesDir, folder)
             if (!targetDir.exists()) targetDir.mkdirs()
-            val targetFile = File(targetDir, filename)
+            targetFile = File(targetDir, filename)
             FileOutputStream(targetFile).use(write)
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, filename)
@@ -202,8 +206,15 @@ object PhotoIo {
             }
             resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
         } catch (_: Exception) {
+            // 쓰다 만 파일이 갤러리에 남지 않도록 정리
+            targetFile?.delete()
             null
         }
+    }
+
+    /** 비트맵 인코딩 실패(false 반환)도 저장 실패로 처리되도록 예외로 바꿔 줌 */
+    fun compressOrThrow(bitmap: Bitmap, format: Bitmap.CompressFormat, quality: Int, out: OutputStream) {
+        if (!bitmap.compress(format, quality, out)) throw java.io.IOException("Bitmap compress failed")
     }
 
     fun extensionFor(mime: String) = when (mime) {
@@ -220,12 +231,15 @@ object PhotoIo {
     private fun shareDir(context: Context) = File(context.cacheDir, SHARE_DIR).apply { mkdirs() }
 
     /** 앱 임시 폴더에 저장하고 다른 앱에 넘길 수 있는 FileProvider URI 반환 */
-    fun saveForSharing(context: Context, filename: String, write: (OutputStream) -> Unit): Uri? = try {
+    fun saveForSharing(context: Context, filename: String, write: (OutputStream) -> Unit): Uri? {
         val file = File(shareDir(context), filename)
-        FileOutputStream(file).use(write)
-        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-    } catch (_: Exception) {
-        null
+        return try {
+            FileOutputStream(file).use(write)
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        } catch (_: Exception) {
+            file.delete()
+            null
+        }
     }
 
     /** 받는 앱이 다 읽었을 만큼 시간이 지난 공유용 임시 파일 정리 */

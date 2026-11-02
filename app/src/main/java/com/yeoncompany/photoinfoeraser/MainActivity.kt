@@ -1185,6 +1185,11 @@ class MainActivity : ComponentActivity() {
     // 사진 비트맵 로드 및 EXIF 메타데이터 정밀 분석
     // restoreHistory가 있으면 앱 재시작 후 복원: 원본 대신 앱 내부에 복사해 둔 파일에서 다시 불러옴
     private fun loadBitmapSafely(uri: Uri, restoreHistory: JSONObject? = null) {
+        // 저장 중에는 원본 복사본(sourceCacheFile)을 읽고 있으므로 새 사진으로 덮어쓰지 않음
+        if (isSaving) {
+            Toast.makeText(this, getString(R.string.save_image_async_1), Toast.LENGTH_SHORT).show()
+            return
+        }
         val isRestore = restoreHistory != null
         if (!isRestore) {
             currentImageUri = uri
@@ -1506,26 +1511,62 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        if (isSaving) {
+            Toast.makeText(this, getString(R.string.save_image_async_1), Toast.LENGTH_SHORT).show()
+            return
+        }
+        isSaving = true
+        val job = captureSaveJob()
         Toast.makeText(this, getString(R.string.quick_clean_and_save_1), Toast.LENGTH_SHORT).show()
-        val sourceUri = currentImageUri
-        thread {
+        runSaveThread(job, isQuickClean = true) {
             // 1순위: 원본 파일에서 메타데이터만 잘라내기 (재압축 없음 → 화질·해상도 그대로)
             // 불러올 때 복사해 둔 파일을 먼저 사용 (원본이 삭제됐거나 권한이 만료돼도 동작)
             val sourceBytes = (if (sourceCacheFile.exists()) sourceCacheFile.readBytes() else null)
-                ?: sourceUri?.let { PhotoIo.readBytes(this, it) }
+                ?: job.originalUri?.let { PhotoIo.readBytes(this, it) }
             val cleaned = sourceBytes?.let { PhotoIo.stripLossless(it) }
 
             if (cleaned != null) {
                 val mime = MetadataStripper.mimeOf(cleaned)
                 val filename = "CLEAN_${System.currentTimeMillis()}.${PhotoIo.extensionFor(mime)}"
-                val savedUri = PhotoIo.save(this, filename, mime, targetFolderName, targetFolderUriString) {
+                val savedUri = PhotoIo.save(this, filename, mime, job.folderName, job.safTreeUri) {
                     it.write(cleaned)
                 }
-                val report = savedUri?.let { buildSaveReport(it, mime, lossless = true) }
-                runOnUiThread { onImageSaved(savedUri, isQuickClean = true, mimeType = mime, report = report) }
+                val report = savedUri?.let { buildSaveReport(it, mime, lossless = true, job) }
+                runOnUiThread { onImageSaved(savedUri, isQuickClean = true, mimeType = mime, job = job, report = report) }
             } else {
                 // HEIC 등 무손실 처리가 불가능한 형식은 재인코딩(JPEG)으로 메타데이터 제거
-                executeSaveBitmap(originalBmp, isQuickClean = true)
+                executeSaveBitmap(originalBmp, isQuickClean = true, job)
+            }
+        }
+    }
+
+    /**
+     * 저장을 시작한 순간의 사진과 저장 설정
+     * 저장은 백그라운드에서 진행되므로, 그 사이 화면 상태가 바뀌어도 이 값을 기준으로 저장·안내함
+     */
+    private data class SaveJob(
+        val originalUri: Uri?,
+        val mime: String?,
+        val before: PhotoMetadata?,
+        val folderName: String,
+        val safTreeUri: String?
+    )
+
+    private fun captureSaveJob() =
+        SaveJob(currentImageUri, currentMimeType, currentMetadata, targetFolderName, targetFolderUriString)
+
+    // 저장 작업을 백그라운드에서 실행하고, 예상치 못한 오류가 나도 저장 중 상태가 풀리도록 처리
+    private fun runSaveThread(job: SaveJob, isQuickClean: Boolean, work: () -> Unit) {
+        thread {
+            try {
+                work()
+            } catch (_: OutOfMemoryError) {
+                runOnUiThread {
+                    isSaving = false
+                    showOutOfMemoryMessage()
+                }
+            } catch (_: Exception) {
+                runOnUiThread { onImageSaved(null, isQuickClean, job.mime ?: "image/jpeg", job) }
             }
         }
     }
@@ -1806,7 +1847,8 @@ class MainActivity : ComponentActivity() {
                             val mime = if (isPng) "image/png" else "image/jpeg"
                             val name = "${prefix}_${batchId}_${index + 1}.${PhotoIo.extensionFor(mime)}"
                             store(name, mime) { out ->
-                                bmp.compress(
+                                PhotoIo.compressOrThrow(
+                                    bmp,
                                     if (isPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
                                     if (isPng) 100 else 95,
                                     out
@@ -1973,22 +2015,11 @@ class MainActivity : ComponentActivity() {
         }
 
         isSaving = true
+        val job = captureSaveJob()
         Toast.makeText(this, getString(R.string.save_image_async_3), Toast.LENGTH_SHORT).show()
-        thread {
-            // 원본 크기 합성은 메모리를 많이 쓰므로 백그라운드에서 처리하고 메모리 부족에 대비
-            val bitmapToSave = try {
-                export()
-            } catch (_: OutOfMemoryError) {
-                null
-            }
-            if (bitmapToSave == null) {
-                runOnUiThread {
-                    isSaving = false
-                    showOutOfMemoryMessage()
-                }
-                return@thread
-            }
-            executeSaveBitmap(bitmapToSave, isQuickClean = false)
+        runSaveThread(job, isQuickClean = false) {
+            // 원본 크기 합성은 메모리를 많이 쓰므로 백그라운드에서 처리 (메모리 부족은 runSaveThread가 안내)
+            executeSaveBitmap(export(), isQuickClean = false, job)
         }
     }
 
@@ -2002,16 +2033,16 @@ class MainActivity : ComponentActivity() {
     }
 
     // 비트맵을 새로 인코딩해 저장 (EXIF는 인코딩 과정에서 전부 사라짐)
-    private fun executeSaveBitmap(bitmapToSave: Bitmap, isQuickClean: Boolean) {
-        val isPng = currentMimeType == "image/png" || bitmapToSave.hasAlpha()
+    private fun executeSaveBitmap(bitmapToSave: Bitmap, isQuickClean: Boolean, job: SaveJob) {
+        val isPng = job.mime == "image/png" || bitmapToSave.hasAlpha()
         val mime = if (isPng) "image/png" else "image/jpeg"
         val compressFormat = if (isPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
         val quality = if (isPng) 100 else 98
         val filename = "CLEAN_${System.currentTimeMillis()}.${PhotoIo.extensionFor(mime)}"
 
         val savedUri = try {
-            PhotoIo.save(this, filename, mime, targetFolderName, targetFolderUriString) { out ->
-                bitmapToSave.compress(compressFormat, quality, out)
+            PhotoIo.save(this, filename, mime, job.folderName, job.safTreeUri) { out ->
+                PhotoIo.compressOrThrow(bitmapToSave, compressFormat, quality, out)
             }
         } finally {
             // 메모리 누수 방지: 내보내기용 임시 비트맵 안전 정리
@@ -2020,8 +2051,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val report = savedUri?.let { buildSaveReport(it, mime, lossless = false) }
-        runOnUiThread { onImageSaved(savedUri, isQuickClean, mime, report) }
+        val report = savedUri?.let { buildSaveReport(it, mime, lossless = false, job) }
+        runOnUiThread { onImageSaved(savedUri, isQuickClean, mime, job, report) }
     }
 
     /** 저장된 파일을 다시 읽어 원본과 비교한 결과 (전후 비교 화면용) */
@@ -2036,12 +2067,12 @@ class MainActivity : ComponentActivity() {
     )
 
     // 백그라운드에서 호출: 저장 결과 파일을 실제로 다시 열어 남은 메타데이터를 확인
-    private fun buildSaveReport(savedUri: Uri, mime: String, lossless: Boolean): SaveReport? {
+    private fun buildSaveReport(savedUri: Uri, mime: String, lossless: Boolean, job: SaveJob): SaveReport? {
         return try {
             val savedBytes = PhotoIo.readBytes(this, savedUri) ?: return null
             val hasSource = sourceCacheFile.exists()
             SaveReport(
-                before = currentMetadata,
+                before = job.before,
                 after = readMetadata(java.io.ByteArrayInputStream(savedBytes), mime),
                 beforeSize = if (hasSource) PhotoIo.uprightSize(this, Uri.fromFile(sourceCacheFile)) else null,
                 afterSize = PhotoIo.uprightSize(this, savedUri),
@@ -2054,22 +2085,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun onImageSaved(savedUri: Uri?, isQuickClean: Boolean, mimeType: String, report: SaveReport? = null) {
+    private fun onImageSaved(
+        savedUri: Uri?, isQuickClean: Boolean, mimeType: String, job: SaveJob, report: SaveReport? = null
+    ) {
         isSaving = false
         if (savedUri != null) {
-            // UI를 메타데이터 제거 완료 상태로 갱신
-            currentMetadata = currentMetadata?.copy(isAlreadyClean = true)
-            updateExifUi(currentMetadata)
+            // 화면에 같은 사진이 열려 있을 때만 메타데이터 제거 완료 상태로 갱신
+            if (currentImageUri == job.originalUri) {
+                currentMetadata = currentMetadata?.copy(isAlreadyClean = true)
+                updateExifUi(currentMetadata)
+            }
             recordSuccessfulSave()
-            showSaveSuccessAndShareDialog(savedUri, isQuickClean, mimeType, report)
+            showSaveSuccessAndShareDialog(savedUri, isQuickClean, mimeType, job, report)
         } else {
             Toast.makeText(this, getString(R.string.on_image_saved_1), Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun showSaveSuccessAndShareDialog(savedUri: Uri, isQuickClean: Boolean, mimeType: String, report: SaveReport?) {
+    private fun showSaveSuccessAndShareDialog(
+        savedUri: Uri, isQuickClean: Boolean, mimeType: String, job: SaveJob, report: SaveReport?
+    ) {
         val title = if (isQuickClean) getString(R.string.show_save_success_and_share_dialog_1) else getString(R.string.show_save_success_and_share_dialog_2)
-        val originalUri = currentImageUri
+        // "원본 삭제"는 반드시 저장을 시작한 사진을 대상으로 함
+        val originalUri = job.originalUri
         val canDelete = canDeleteOriginal(originalUri)
         // 제거된 정보를 체크 표시 목록으로 보여주는 카드
         val successColor = if (isNightMode) Color.parseColor("#34D399") else Color.parseColor("#10B981")
