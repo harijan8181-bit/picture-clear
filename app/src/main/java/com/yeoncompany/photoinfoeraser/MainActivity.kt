@@ -1273,6 +1273,8 @@ class MainActivity : ComponentActivity() {
         val artist = exif.getAttribute(ExifInterface.TAG_ARTIST)
         val copyright = exif.getAttribute(ExifInterface.TAG_COPYRIGHT)
         val userComment = exif.getAttribute(ExifInterface.TAG_USER_COMMENT)
+        // 예전 카메라는 ISO를 옛 태그 이름으로 기록하므로 함께 확인
+        @Suppress("DEPRECATION")
         val iso = exif.getAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY)
             ?: exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS)
         val fNumber = exif.getAttribute(ExifInterface.TAG_F_NUMBER)?.let { "f/$it" }
@@ -2000,6 +2002,8 @@ class MainActivity : ComponentActivity() {
             displayMetrics.widthPixels
         }
         val adWidthInDp = (widthPixels / displayMetrics.density).toInt()
+        // 새 권장 API(getLargeAnchoredAdaptiveBannerAdSize)는 배너가 훨씬 높아져 편집 화면이 좁아지므로 기존 크기 유지
+        @Suppress("DEPRECATION")
         return AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(this, adWidthInDp)
     }
 

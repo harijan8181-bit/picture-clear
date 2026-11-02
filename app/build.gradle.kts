@@ -17,7 +17,7 @@ val testAdmobBannerId = "ca-app-pub-3940256099942544/6300978111"
 
 android {
     namespace = "com.yeoncompany.photoinfoeraser"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.yeoncompany.photoinfoeraser"
@@ -66,23 +66,20 @@ android {
     }
 
     buildFeatures {
-        viewBinding = true
         buildConfig = true
     }
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("com.google.android.material:material:1.12.0")
-    implementation("androidx.activity:activity-ktx:1.9.2")
-    implementation("com.google.android.gms:play-services-ads:23.3.0")
-    implementation("com.google.android.ump:user-messaging-platform:3.1.0")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.activity.ktx)
+    implementation(libs.androidx.exifinterface)
+    implementation(libs.play.services.ads)
+    implementation(libs.ump)
+    implementation(libs.play.review)
     implementation(libs.mlkit.face.detection)
     implementation(libs.mlkit.text.recognition.korean)
     implementation(libs.mlkit.barcode.scanning)
-    implementation("androidx.exifinterface:exifinterface:1.3.7")
-    implementation("com.google.android.play:review:2.0.2")
 
     testImplementation(libs.junit)
 }
